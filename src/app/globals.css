@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-primary-bg: #0A0A0A;
+  --color-secondary-bg: #0D0D0D;
+  --color-surface: #111111;
+  --color-landing-bg: #F5F5F5;
+  --color-text-primary: #FFFFFF;
+  --color-text-on-light: #0A0A0A;
+  --color-text-muted: rgba(255, 255, 255, 0.55);
+  --color-text-muted-light: #555555;
+  --color-accent: #C41E3A;
+  --color-accent-light: #E8526A;
+  --color-accent-dark: #8B0000;
+  --color-gold: #C9A84C;
+  --color-divider-dark: rgba(255, 255, 255, 0.08);
+  --color-divider-light: #E0E0E0;
+
+  --font-heading: "Playfair Display", Georgia, serif;
+  --font-body: "DM Sans", system-ui, sans-serif;
+}
+
+* {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-body);
+  background: #0A0A0A;
+  color: #FFFFFF;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.progress-fill {
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.question-enter {
+  opacity: 0;
+  transform: translateX(30px);
+}
+.question-active {
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+@keyframes fillBar {
+  from { width: 0%; }
+}
+.score-bar-fill {
+  animation: fillBar 1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-in-up {
+  animation: fadeInUp 0.6s ease forwards;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #0A0A0A;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
