@@ -1,14 +1,29 @@
 import type { Metadata } from "next";
+import { DM_Sans, Playfair_Display } from "next/font/google";
 import "./globals.css";
 
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-body",
+  display: "swap",
+});
+
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+  variable: "--font-heading",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "Power Score Quiz | Way of Gods",
+  title: "PQ — The Power Quotient Assessment | Way of Gods",
   description:
-    "Discover your Power Archetype. A free assessment that maps your psychology of power across 3 axes and reveals which of 6 archetypes drives your decisions.",
+    "The PQ Assessment maps your psychology of power across 4 axes and 8 archetypes. A proprietary diagnostic from Way of Gods.",
   openGraph: {
-    title: "Discover Your Power Archetype | Way of Gods",
+    title: "PQ — The Power Quotient Assessment",
     description:
-      "Take the free Power Score quiz. 15 questions. 3 axes of power. 6 archetypes. Find out how you wield influence.",
+      "25 questions. 4 axes of power. 8 archetypes. Discover which one drives your decisions.",
     type: "website",
   },
 };
@@ -19,15 +34,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;500;600;700;800&display=swap"
-          rel="stylesheet"
-        />
-      </head>
+    <html lang="en" className={`${dmSans.variable} ${playfair.variable}`}>
       <body className="min-h-screen">
         {children}
         <ConsoleWarning />

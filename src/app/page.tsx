@@ -117,7 +117,7 @@ export default function LandingPage() {
               className="text-sm md:text-base max-w-md mx-auto mb-3 font-[family-name:var(--font-body)] leading-relaxed"
               style={{ color: "rgba(255,255,255,0.45)" }}
             >
-              15 questions. 3 axes of power. 6 archetypes.
+              25 questions. 4 axes of power. 8 archetypes.
             </p>
             <p
               className="text-xs md:text-sm max-w-xs mx-auto mb-14 font-[family-name:var(--font-body)] leading-relaxed"
@@ -177,9 +177,9 @@ export default function LandingPage() {
             className={`mt-16 flex items-center gap-8 md:gap-12 transition-all duration-700 delay-[900ms] ${loaded ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}
           >
             {[
-              { value: "15", label: "Questions" },
-              { value: "3", label: "Power Axes" },
-              { value: "6", label: "Archetypes" },
+              { value: "25", label: "Questions" },
+              { value: "4", label: "Power Axes" },
+              { value: "8", label: "Archetypes" },
             ].map((stat, i) => (
               <div key={i} className="text-center">
                 <p

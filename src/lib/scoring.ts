@@ -77,55 +77,28 @@ export function computePQ(scores: AxisScores): number {
   );
 }
 
-// ---------- Verification ----------
+// ---------- Synthetic profile fixtures (per archetype) ----------
 
-if (typeof window === "undefined" && process.env.NODE_ENV !== "production") {
-  const profiles: { label: string; answers: AnswerDelta[] }[] = [
-    {
-      label: "High-command, high-visibility leader (expect Sovereign)",
-      answers: [
-        { control: 15, visibility: 15, timeHorizon: 5, powerSource: 5 },
-        { control: 15, visibility: 10, timeHorizon: 10, powerSource: 10 },
-        { control: 10, visibility: 10, timeHorizon: 5, powerSource: 5 },
-        { control: 10, visibility: 5, timeHorizon: 10, powerSource: 10 },
-        { control: 10, visibility: 10, timeHorizon: 5, powerSource: 5 },
-      ],
-    },
-    {
-      label: "Invisible, patient, forceful operator (expect Shadow)",
-      answers: [
-        { control: 10, visibility: -15, timeHorizon: 15, powerSource: 15 },
-        { control: 15, visibility: -10, timeHorizon: 10, powerSource: 10 },
-        { control: 10, visibility: -15, timeHorizon: 10, powerSource: 10 },
-        { control: 5, visibility: -10, timeHorizon: 15, powerSource: 15 },
-        { control: 10, visibility: -10, timeHorizon: 10, powerSource: 10 },
-      ],
-    },
-    {
-      label: "Charismatic, visible, magnetic presence (expect Flame)",
-      answers: [
-        { control: -5, visibility: 15, timeHorizon: 0, powerSource: -15 },
-        { control: 0, visibility: 10, timeHorizon: 5, powerSource: -10 },
-        { control: -5, visibility: 15, timeHorizon: -5, powerSource: -15 },
-        { control: 0, visibility: 10, timeHorizon: 0, powerSource: -10 },
-        { control: -10, visibility: 15, timeHorizon: 5, powerSource: -15 },
-      ],
-    },
-  ];
+export interface SyntheticProfile {
+  label: string;
+  expect: string;
+  scores: AxisScores;
+}
 
-  console.log("\n=== PQ Scoring Engine Verification ===\n");
+export const syntheticProfiles: SyntheticProfile[] = [
+  { label: "Open commander", expect: "sovereign", scores: { control: 90, visibility: 85, timeHorizon: 75, powerSource: 70 } },
+  { label: "Invisible operator", expect: "shadow", scores: { control: 85, visibility: 15, timeHorizon: 85, powerSource: 85 } },
+  { label: "Systems builder", expect: "architect", scores: { control: 65, visibility: 45, timeHorizon: 90, powerSource: 50 } },
+  { label: "Insight-first seer", expect: "oracle", scores: { control: 45, visibility: 55, timeHorizon: 75, powerSource: 15 } },
+  { label: "Kinetic enforcer", expect: "blade", scores: { control: 85, visibility: 85, timeHorizon: 15, powerSource: 85 } },
+  { label: "Composure politician", expect: "diplomat", scores: { control: 45, visibility: 65, timeHorizon: 75, powerSource: 30 } },
+  { label: "Fast opportunist", expect: "hunter", scores: { control: 55, visibility: 35, timeHorizon: 15, powerSource: 55 } },
+  { label: "Magnetic presence", expect: "flame", scores: { control: 35, visibility: 90, timeHorizon: 45, powerSource: 10 } },
+];
 
-  for (const p of profiles) {
-    const scores = calculateAxisScores(p.answers);
-    const match = matchArchetype(scores);
-    const pq = computePQ(scores);
-
-    console.log(`Profile: ${p.label}`);
-    console.log(`  Axes: C=${scores.control} V=${scores.visibility} T=${scores.timeHorizon} P=${scores.powerSource}`);
-    console.log(`  PQ Score: ${pq}/100`);
-    console.log(`  Match: ${match.archetype.name} (distance: ${match.distance.toFixed(1)})`);
-    console.log(`  Runner-up: ${match.runnerUp.name} (distance: ${match.runnerUpDistance.toFixed(1)})`);
-    console.log(`  Tiebreaker needed: ${match.needsTiebreaker}`);
-    console.log();
-  }
+/** Returns which fixtures fail to match their expected archetype. Empty = all pass. */
+export function validateFixtures(): { profile: SyntheticProfile; actual: string }[] {
+  return syntheticProfiles
+    .map((p) => ({ profile: p, actual: matchArchetype(p.scores).archetype.id }))
+    .filter(({ profile, actual }) => actual !== profile.expect);
 }
