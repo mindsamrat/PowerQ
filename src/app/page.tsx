@@ -1,11 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
-
-// Dynamic import so Three.js only loads client-side
-const Scene3D = dynamic(() => import("@/components/Scene3D"), { ssr: false });
 
 export default function LandingPage() {
   const [loaded, setLoaded] = useState(false);
@@ -30,20 +26,6 @@ export default function LandingPage() {
 
   return (
     <main className="relative min-h-screen bg-[#080808] overflow-hidden text-white">
-      {/* 3D WebGL scene fills the background */}
-      <Scene3D />
-
-      {/* Dark vignette overlay to make text readable */}
-      <div className="absolute inset-0 z-10 pointer-events-none"
-        style={{
-          background: "radial-gradient(ellipse 70% 70% at 50% 50%, transparent 0%, rgba(8,8,8,0.5) 60%, rgba(8,8,8,0.92) 100%)",
-        }}
-      />
-      {/* Bottom fade */}
-      <div className="absolute bottom-0 left-0 right-0 h-40 z-10 pointer-events-none"
-        style={{ background: "linear-gradient(to top, #080808, transparent)" }}
-      />
-
       {/* UI Layer */}
       <div className="relative z-20 min-h-screen flex flex-col">
 
