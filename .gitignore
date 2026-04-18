@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# PQ local subscriber scaffolding (swap for ConvertKit/Brevo in prod)
+.pq-subscribers.ndjson
