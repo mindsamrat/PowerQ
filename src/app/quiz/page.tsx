@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   buildQuizPlan,
   deltaFromChoice,
@@ -12,7 +12,6 @@ import {
   type QuizProgress,
 } from "@/lib/quiz-engine";
 import type { ChoiceQuestion, FreeTextQuestion, OptionId, Question } from "@/data/questions";
-import type { FinalResult } from "@/lib/quiz-engine";
 
 const STORAGE_KEY = "pq_progress_v1";
 const STORAGE_MAX_AGE_MS = 1000 * 60 * 60 * 48; // 48 hours
@@ -53,12 +52,12 @@ function clearProgress() {
 }
 
 export default function QuizPage() {
+  const router = useRouter();
   const plan = useMemo<Question[]>(() => buildQuizPlan(), []);
   const [cursor, setCursor] = useState(0);
   const [progress, setProgress] = useState<QuizProgress>(emptyProgress);
   const [transitioning, setTransitioning] = useState(false);
   const [visible, setVisible] = useState(true);
-  const [result, setResult] = useState<FinalResult | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -88,21 +87,23 @@ export default function QuizPage() {
           window.setTimeout(() => setTransitioning(false), 50);
         }, 320);
       } else {
-        setProgress(nextProgress);
         const finalResult = finalize(nextProgress);
-        setResult(finalResult);
         clearProgress();
         try {
-          sessionStorage.setItem("pq_result_v1", JSON.stringify({
-            archetypeId: finalResult.match.archetype.id,
-            scores: finalResult.scores,
-            pq: finalResult.pq,
-            freeText: finalResult.freeText,
-          }));
+          sessionStorage.setItem("pq_freetext_v1", JSON.stringify(finalResult.freeText));
         } catch { /* ignore */ }
+        const qs = new URLSearchParams({
+          id: finalResult.match.archetype.id,
+          c: String(finalResult.scores.control),
+          v: String(finalResult.scores.visibility),
+          t: String(finalResult.scores.timeHorizon),
+          p: String(finalResult.scores.powerSource),
+          pq: String(finalResult.pq),
+        });
+        router.push(`/results?${qs.toString()}`);
       }
     },
-    [cursor, plan.length]
+    [cursor, plan.length, router]
   );
 
   const handleChoice = useCallback(
@@ -143,7 +144,7 @@ export default function QuizPage() {
   const progressPct = (step / total) * 100;
 
   useEffect(() => {
-    if (result || !current || current.kind === "free-text") return;
+    if (!current || current.kind === "free-text") return;
     const map: Record<string, OptionId> = { "1": "a", "2": "b", "3": "c", "4": "d" };
     const handler = (e: KeyboardEvent) => {
       const id = map[e.key];
@@ -151,11 +152,7 @@ export default function QuizPage() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [current, handleChoice, result]);
-
-  if (result) {
-    return <MinimalResults result={result} />;
-  }
+  }, [current, handleChoice]);
 
   return (
     <main className="min-h-screen bg-primary-bg bg-gradient-animate flex flex-col relative grain">
@@ -307,72 +304,3 @@ function FreeTextStep({
   );
 }
 
-function MinimalResults({ result }: { result: FinalResult }) {
-  const { match, scores, pq } = result;
-  const axes: { label: string; value: number }[] = [
-    { label: "Control", value: scores.control },
-    { label: "Visibility", value: scores.visibility },
-    { label: "Time-Horizon", value: scores.timeHorizon },
-    { label: "Power-Source", value: scores.powerSource },
-  ];
-  return (
-    <main className="min-h-screen bg-primary-bg bg-gradient-animate relative grain">
-      <div className="particle" /><div className="particle" /><div className="particle" />
-
-      <div className="relative z-10 max-w-lg mx-auto px-6 py-16">
-        <div className="text-center mb-10 reveal">
-          <p className="text-[10px] tracking-[0.3em] uppercase text-accent/60 mb-4 font-[family-name:var(--font-body)]">
-            Your Power Archetype
-          </p>
-          <h1 className="font-[family-name:var(--font-heading)] text-4xl md:text-5xl font-bold text-text-primary mb-3 glow-text">
-            {match.archetype.name}
-          </h1>
-          <p className="text-text-muted/60 text-sm italic font-[family-name:var(--font-body)]">
-            {match.archetype.tagline}
-          </p>
-        </div>
-
-        <div className="text-center py-8 reveal reveal-delay-2">
-          <p className="text-[10px] tracking-[0.3em] uppercase text-text-muted/40 mb-2 font-[family-name:var(--font-body)]">
-            PQ
-          </p>
-          <p className="font-[family-name:var(--font-heading)] text-7xl font-bold text-gold glow-gold">
-            {pq}
-          </p>
-        </div>
-
-        <div className="space-y-5 glass rounded-2xl p-6 md:p-8 border-gradient reveal reveal-delay-3">
-          {axes.map((a) => (
-            <div key={a.label}>
-              <div className="flex items-baseline justify-between mb-2">
-                <span className="text-xs tracking-widest uppercase text-text-muted/60 font-[family-name:var(--font-body)]">
-                  {a.label}
-                </span>
-                <span className="font-[family-name:var(--font-heading)] text-lg font-semibold text-text-primary">
-                  {a.value}
-                </span>
-              </div>
-              <div className="h-1 w-full bg-divider-dark rounded-full overflow-hidden">
-                <div className="h-full bg-accent" style={{ width: `${a.value}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <p className="text-text-muted/40 text-xs text-center mt-10 font-[family-name:var(--font-body)] italic">
-          Full archetype reveal, rarity, natural enemy, shareable card, and PDF
-          report are coming next.
-        </p>
-
-        <div className="text-center mt-10">
-          <Link
-            href="/"
-            className="text-text-muted/50 hover:text-text-muted text-sm font-[family-name:var(--font-body)] transition-colors"
-          >
-            Back home
-          </Link>
-        </div>
-      </div>
-    </main>
-  );
-}
