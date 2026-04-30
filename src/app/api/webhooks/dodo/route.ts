@@ -4,7 +4,7 @@ import { getResponseById, markResponsePaid } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
 
-const REPLAY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const TOLERANCE_SECONDS = 5 * 60;
 
 /**
  * Dodo Payments webhook handler.
@@ -13,82 +13,81 @@ const REPLAY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
  *   https://quiz.wayofgods.com/api/webhooks/dodo
  *
  * Subscribe to these events:
- *   - payment.succeeded   -> mark response paid + (later) trigger paid-PDF generation
- *   - payment.failed      -> logged for ops (declined card, etc.)
- *   - payment.cancelled   -> logged only (user bailed mid-checkout)
+ *   - payment.succeeded   -> mark response paid
+ *   - payment.failed      -> log only
+ *   - payment.cancelled   -> log only
  *
- * Protection layers:
- *   1. HMAC-SHA256 signature verification with DODO_WEBHOOK_SECRET
- *      (constant-time comparison — no timing attack surface)
- *   2. Replay protection — if the request carries a timestamp header,
- *      reject events older than 5 minutes
- *   3. Idempotency — payment.succeeded checks current row state before
- *      re-marking; replays don't double-process
+ * Dodo uses the Standard Webhooks signing spec:
+ *   https://github.com/standard-webhooks/standard-webhooks
+ *   - Headers:  webhook-id, webhook-timestamp, webhook-signature
+ *   - Body:     `${id}.${timestamp}.${rawBody}`
+ *   - Algorithm: HMAC-SHA256, base64-encoded
+ *   - Secret format: `whsec_<base64-encoded-key>` -> decode before signing
+ *   - Signature header: "v1,<base64sig>" (or "v1,<sig> v2,<sig>" for multi)
  */
 export async function POST(req: Request) {
-  const secret = process.env.DODO_WEBHOOK_SECRET;
-  if (!secret) {
+  const secretRaw = process.env.DODO_WEBHOOK_SECRET;
+  if (!secretRaw) {
     console.error("[dodo-webhook] DODO_WEBHOOK_SECRET not set");
     return NextResponse.json({ error: "webhook not configured" }, { status: 500 });
   }
 
   const rawBody = await req.text();
 
-  // ---- Replay protection ----
-  const tsHeader =
-    req.headers.get("webhook-timestamp") ??
-    req.headers.get("dodo-timestamp") ??
-    req.headers.get("x-dodo-timestamp");
-  if (tsHeader) {
-    const tsMs = Number(tsHeader) * (tsHeader.length <= 10 ? 1000 : 1);
-    if (!Number.isNaN(tsMs)) {
-      const drift = Math.abs(Date.now() - tsMs);
-      if (drift > REPLAY_WINDOW_MS) {
-        console.warn("[dodo-webhook] rejected stale event, drift =", drift, "ms");
-        return NextResponse.json({ error: "stale event" }, { status: 401 });
-      }
-    }
+  const id = req.headers.get("webhook-id");
+  const ts = req.headers.get("webhook-timestamp");
+  const sigHeader = req.headers.get("webhook-signature");
+
+  if (!id || !ts || !sigHeader) {
+    console.warn("[dodo-webhook] missing standard webhook headers", {
+      hasId: !!id, hasTs: !!ts, hasSig: !!sigHeader,
+    });
+    return NextResponse.json({ error: "missing standard webhook headers" }, { status: 401 });
   }
 
-  // ---- Signature verification ----
-  const signatureHeader =
-    req.headers.get("webhook-signature") ??
-    req.headers.get("dodo-signature") ??
-    req.headers.get("x-dodo-signature") ??
-    "";
-
-  if (!signatureHeader) {
-    return NextResponse.json({ error: "missing signature" }, { status: 401 });
+  // Replay protection: timestamp must be within +/- 5 minutes.
+  const tsNumber = Number.parseInt(ts, 10);
+  if (Number.isNaN(tsNumber)) {
+    return NextResponse.json({ error: "bad timestamp" }, { status: 401 });
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - tsNumber) > TOLERANCE_SECONDS) {
+    console.warn("[dodo-webhook] stale event", { drift: now - tsNumber });
+    return NextResponse.json({ error: "stale event" }, { status: 401 });
   }
 
-  // Some providers prefix with `sha256=` or `t=...,v1=...` -> grab the last hex token.
-  const cleaned = signatureHeader
-    .replace(/^sha256=/i, "")
-    .replace(/.*v1=/, "")
-    .trim();
+  // Decode the signing key. Dodo gives the secret as `whsec_<base64-key>`.
+  // The bytes used for HMAC are the base64-decoded part after that prefix.
+  let signingKey: Buffer;
+  if (secretRaw.startsWith("whsec_")) {
+    signingKey = Buffer.from(secretRaw.slice(6), "base64");
+  } else {
+    // Fall back to using the secret as raw UTF-8 bytes if the prefix is absent.
+    signingKey = Buffer.from(secretRaw, "utf8");
+  }
 
-  // Some providers sign `${timestamp}.${body}` instead of just body.
-  const candidates = [
-    rawBody,
-    tsHeader ? `${tsHeader}.${rawBody}` : null,
-  ].filter((x): x is string => x !== null);
+  const signedContent = `${id}.${ts}.${rawBody}`;
+  const expected = createHmac("sha256", signingKey).update(signedContent).digest("base64");
+
+  // Header value can carry multiple versioned signatures: "v1,sig v2,sig".
+  // Split on whitespace, strip each version prefix, compare to our v1 sig.
+  const candidates = sigHeader.split(/\s+/).map((tok) => {
+    const idx = tok.indexOf(",");
+    return idx === -1 ? tok : tok.slice(idx + 1);
+  });
 
   let ok = false;
-  for (const payload of candidates) {
-    const expected = createHmac("sha256", secret).update(payload).digest("hex");
-    try {
-      if (cleaned.length === expected.length) {
-        if (
-          timingSafeEqual(
-            Buffer.from(cleaned, "hex"),
-            Buffer.from(expected, "hex")
-          )
-        ) {
+  const expectedBuf = Buffer.from(expected);
+  for (const cand of candidates) {
+    const candBuf = Buffer.from(cand);
+    if (candBuf.length === expectedBuf.length) {
+      try {
+        if (timingSafeEqual(candBuf, expectedBuf)) {
           ok = true;
           break;
         }
-      }
-    } catch { /* fall through */ }
+      } catch { /* ignore */ }
+    }
   }
 
   if (!ok) {
@@ -109,30 +108,24 @@ export async function POST(req: Request) {
   const metadata = (data.metadata ?? {}) as Record<string, unknown>;
   const responseId = typeof metadata.response_id === "string" ? metadata.response_id : null;
 
-  // ---- payment.succeeded ----
   if (type === "payment.succeeded" || type === "payment.completed") {
     if (!responseId) {
       console.warn("[dodo-webhook] succeeded event missing response_id metadata");
       return NextResponse.json({ ok: true, note: "no response_id" });
     }
-
-    // Idempotency guard: if this row is already paid, skip the re-write.
     const existing = await getResponseById(responseId);
     if (existing?.payment_status === "paid") {
       return NextResponse.json({ ok: true, idempotent: true, responseId });
     }
-
     const updated = await markResponsePaid(responseId, "");
     return NextResponse.json({ ok: true, updated, responseId });
   }
 
-  // ---- payment.failed ----
   if (type === "payment.failed") {
-    console.log("[dodo-webhook] payment.failed", { responseId, data });
+    console.log("[dodo-webhook] payment.failed", { responseId });
     return NextResponse.json({ ok: true });
   }
 
-  // ---- payment.cancelled ----
   if (type === "payment.cancelled" || type === "payment.canceled") {
     console.log("[dodo-webhook] payment.cancelled", { responseId });
     return NextResponse.json({ ok: true });
