@@ -13,7 +13,7 @@ import {
 } from "@/lib/quiz-engine";
 import type { ChoiceQuestion, EmailQuestion, FreeTextQuestion, OptionId, Question } from "@/data/questions";
 
-const STORAGE_KEY = "pq_progress_v1";
+const STORAGE_KEY = "pq_progress_v2";
 const STORAGE_MAX_AGE_MS = 1000 * 60 * 60 * 48; // 48 hours
 
 interface StoredProgress {
