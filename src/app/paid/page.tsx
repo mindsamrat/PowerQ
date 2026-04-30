@@ -43,7 +43,7 @@ function PaidPage() {
         if (body.payment_status === "paid") {
           setState({
             status: "paid",
-            pdfUrl: body.pdf_url || `/api/pdf/free?id=${body.archetype_id}&c=${body.scores.control}&v=${body.scores.visibility}&t=${body.scores.timeHorizon}&p=${body.scores.powerSource}&pq=${body.pq_score}&token=${responseId.slice(0, 8)}`,
+            pdfUrl: `/api/pdf/paid?id=${encodeURIComponent(responseId)}`,
           });
           return;
         }
