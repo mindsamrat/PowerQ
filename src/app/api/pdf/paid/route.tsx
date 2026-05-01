@@ -1,4 +1,4 @@
-import { renderToStream, Document, Page, Text, View, StyleSheet, Font } from "@react-pdf/renderer";
+import { renderToStream, Document, Page, Text, View, StyleSheet, Font, Svg, Path, Polygon, Circle, Line, G } from "@react-pdf/renderer";
 import { join } from "node:path";
 import React from "react";
 import {
@@ -31,6 +31,15 @@ function registerFonts() {
     ],
   });
   Font.register({
+    family: "Garamond",
+    fonts: [
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-400-normal.woff"), fontWeight: 400 },
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-600-normal.woff"), fontWeight: 600 },
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-700-normal.woff"), fontWeight: 700 },
+    ],
+  });
+  Font.register({
     family: "DM Sans",
     fonts: [
       { src: join(fontDir, "dm-sans/files/dm-sans-latin-400-normal.woff"), fontWeight: 400 },
@@ -44,22 +53,37 @@ function registerFonts() {
 const GOLD = "#8B7355";
 const GOLD_LIGHT = "#B8A870";
 const INK = "#0A0A0A";
-const SUB = "#444";
+const SUB = "#3A3A3A";
 const FAINT = "#888";
 const CRIMSON = "#9F1024";
+const CRIMSON_DEEP = "#7A0C1B";
 const PAPER = "#FAF6EE";
+const PAPER_DARK = "#F1EAD8";
+
+// Per-axis colour codes for visual differentiation across the report
+const AXIS_COLOR: Record<AxisId, string> = {
+  control: "#8B5A3C",      // umber - earth, command
+  visibility: "#C9A54C",    // gold - sun, visibility
+  timeHorizon: "#3F5F7E",   // slate blue - depth, patience
+  powerSource: "#9F1024",   // crimson - force, magnetism
+};
 
 const s = StyleSheet.create({
-  page: { padding: 56, fontFamily: "DM Sans", fontSize: 11, color: INK, backgroundColor: "#FFFFFF" },
+  page: { paddingTop: 64, paddingBottom: 56, paddingHorizontal: 56, fontFamily: "Garamond", fontSize: 11, color: INK, backgroundColor: "#FFFFFF" },
+  // Crimson accent bar at the top of every page; logo + brand line
+  pageHeaderBar: { position: "absolute", top: 0, left: 0, right: 0, height: 4, backgroundColor: CRIMSON },
+  pageHeader: { position: "absolute", top: 18, left: 56, right: 56, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  pageHeaderBrand: { fontFamily: "Playfair", fontWeight: 700, fontSize: 9, letterSpacing: 4, color: CRIMSON, textTransform: "uppercase" },
+  pageHeaderMeta: { fontFamily: "DM Sans", fontSize: 8, letterSpacing: 1.5, color: FAINT, textTransform: "uppercase" },
   label: { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: GOLD, fontWeight: 700 },
-  pageTitle: { fontFamily: "Playfair", fontWeight: 700, fontSize: 28, marginTop: 8, marginBottom: 14, color: INK, lineHeight: 1.1 },
-  sectionHeading: { fontFamily: "Playfair", fontWeight: 700, fontSize: 15, marginTop: 16, marginBottom: 6, color: INK },
-  body: { fontSize: 10.5, lineHeight: 1.7, color: SUB, marginBottom: 8 },
-  bodyEmphasis: { fontSize: 11.5, lineHeight: 1.7, color: INK, marginBottom: 10, fontStyle: "italic" },
-  caption: { fontSize: 9.5, lineHeight: 1.55, color: SUB, fontStyle: "italic" },
-  divider: { height: 1, backgroundColor: "#E0D9C8", marginVertical: 14 },
-  watermark: { position: "absolute", bottom: 24, left: 56, right: 56, fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: FAINT, textAlign: "center" },
-  pageNum: { position: "absolute", bottom: 24, right: 56, fontSize: 8, color: FAINT },
+  pageTitle: { fontFamily: "Playfair", fontWeight: 700, fontSize: 26, marginTop: 6, marginBottom: 14, color: INK, lineHeight: 1.1 },
+  sectionHeading: { fontFamily: "Playfair", fontWeight: 700, fontSize: 14, marginTop: 14, marginBottom: 6, color: INK },
+  body: { fontSize: 11, lineHeight: 1.65, color: SUB, marginBottom: 8 },
+  bodyEmphasis: { fontSize: 12, lineHeight: 1.65, color: INK, marginBottom: 10, fontStyle: "italic" },
+  caption: { fontSize: 10, lineHeight: 1.5, color: SUB, fontStyle: "italic" },
+  divider: { height: 1, backgroundColor: "#E0D9C8", marginVertical: 12 },
+  watermark: { position: "absolute", bottom: 22, left: 56, right: 120, fontSize: 7, letterSpacing: 1.5, textTransform: "uppercase", color: FAINT },
+  pageNum: { position: "absolute", bottom: 22, right: 56, fontSize: 8, color: FAINT, fontFamily: "DM Sans" },
 
   // Cover
   coverFrame: { flex: 1, justifyContent: "center", alignItems: "center", padding: 36 },
@@ -127,6 +151,98 @@ const s = StyleSheet.create({
   readingLabel: { width: 70, fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700, paddingTop: 1 },
   readingBody: { flex: 1, fontSize: 10.5, lineHeight: 1.6, color: INK },
 });
+
+// ---------- Reusable visual components ----------
+
+function PageChrome({ docId, watermark }: { docId: string; watermark: string }) {
+  return (
+    <>
+      <View style={s.pageHeaderBar} fixed />
+      <View style={s.pageHeader} fixed>
+        <Text style={s.pageHeaderBrand}>PQ · Power Quotient Assessment</Text>
+        <Text style={s.pageHeaderMeta}>Doc {docId}</Text>
+      </View>
+      <Text style={s.watermark} fixed>{watermark}</Text>
+      <Text style={s.pageNum} render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} fixed />
+    </>
+  );
+}
+
+// Crimson compass-rose used on the cover. Mirrors the favicon design.
+function CompassRose({ size = 96 }: { size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 64 64">
+      <Path d="M32 6 L32 58" stroke={CRIMSON} strokeWidth={0.8} />
+      <Path d="M6 32 L58 32" stroke={CRIMSON} strokeWidth={0.8} />
+      <Path d="M32 7 L34.5 30 L57 32 L34.5 34 L32 57 L29.5 34 L7 32 L29.5 30 Z" fill={CRIMSON} />
+      <Path d="M48.7 15.3 L34.4 29.6 L48.7 48.7 L34.4 34.4 L15.3 48.7 L29.6 34.4 L15.3 15.3 L29.6 29.6 Z" fill={CRIMSON} fillOpacity={0.35} />
+      <Circle cx={32} cy={32} r={3} fill="#FFFFFF" />
+      <Circle cx={32} cy={32} r={1.4} fill={CRIMSON} />
+    </Svg>
+  );
+}
+
+interface RadarPoint { axis: AxisId; value: number; label: string }
+function RadarChart({ scores, size = 220 }: { scores: Record<AxisId, number>; size?: number }) {
+  const center = size / 2;
+  const maxR = size * 0.38;
+  const points: RadarPoint[] = [
+    { axis: "control", value: scores.control, label: "Control" },
+    { axis: "visibility", value: scores.visibility, label: "Visibility" },
+    { axis: "timeHorizon", value: scores.timeHorizon, label: "Time" },
+    { axis: "powerSource", value: scores.powerSource, label: "Power" },
+  ];
+  // Top, Right, Bottom, Left
+  const angles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+
+  const ringValues = [25, 50, 75, 100];
+
+  const userPolygon = points
+    .map((p, i) => {
+      const r = (p.value / 100) * maxR;
+      const x = center + r * Math.cos(angles[i]);
+      const y = center + r * Math.sin(angles[i]);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {/* Concentric rings */}
+      {ringValues.map((v) => (
+        <Circle key={v} cx={center} cy={center} r={(v / 100) * maxR} stroke="#E0D9C8" strokeWidth={0.6} fill="none" />
+      ))}
+      {/* Axis lines */}
+      {angles.map((ang, i) => (
+        <Line
+          key={i}
+          x1={center}
+          y1={center}
+          x2={center + maxR * Math.cos(ang)}
+          y2={center + maxR * Math.sin(ang)}
+          stroke="#E0D9C8"
+          strokeWidth={0.6}
+        />
+      ))}
+      {/* User polygon */}
+      <Polygon points={userPolygon} fill={CRIMSON} fillOpacity={0.18} stroke={CRIMSON} strokeWidth={1.4} />
+      {/* User score dots */}
+      {points.map((p, i) => {
+        const r = (p.value / 100) * maxR;
+        const x = center + r * Math.cos(angles[i]);
+        const y = center + r * Math.sin(angles[i]);
+        return <Circle key={p.axis} cx={x} cy={y} r={2.5} fill={AXIS_COLOR[p.axis]} />;
+      })}
+      {/* Axis labels */}
+      <G>
+        <Text x={center} y={center - maxR - 10} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "middle" }}>CONTROL</Text>
+        <Text x={center + maxR + 14} y={center + 3} style={{ fontSize: 8, fontFamily: "DM Sans" }}>VISIBILITY</Text>
+        <Text x={center} y={center + maxR + 14} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "middle" }}>TIME-HORIZON</Text>
+        <Text x={center - maxR - 14} y={center + 3} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "end" }}>POWER-SOURCE</Text>
+      </G>
+    </Svg>
+  );
+}
 
 function clampScore(n: unknown): number {
   const v = Number(n);
@@ -224,6 +340,9 @@ async function renderPaidPdf(req: Request) {
       {/* 1. COVER */}
       <Page size="LETTER" style={s.page}>
         <View style={s.coverFrame}>
+          <View style={{ marginBottom: 18 }}>
+            <CompassRose size={84} />
+          </View>
           <Text style={s.coverLabel}>The PQ Power Profile</Text>
           <Text style={s.coverGreeting}>Prepared for {personalName}</Text>
           <Text style={s.coverArchetype}>{archetype.name}</Text>
@@ -239,7 +358,7 @@ async function renderPaidPdf(req: Request) {
             <Text style={s.totemMeaning}>{archetype.totem.meaning}</Text>
           </View>
         </View>
-        <Text style={s.watermark}>{watermark}</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 2. THE VERDICT — validating opener */}
@@ -273,8 +392,7 @@ async function renderPaidPdf(req: Request) {
             </Text>
           </>
         )}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>02</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 3. POWER SIGNATURE */}
@@ -282,17 +400,21 @@ async function renderPaidPdf(req: Request) {
         <Text style={s.label}>Your Power Signature</Text>
         <Text style={s.pageTitle}>Four axes. One pattern. {personalName}.</Text>
 
+        <View style={{ alignItems: "center", marginVertical: 8 }}>
+          <RadarChart scores={scores} size={240} />
+        </View>
+
         {axesOrdered.map((axis) => {
           const value = scores[axis];
           const narrative = axisNarratives[axis][bandFor(value)];
           return (
             <View key={axis} style={s.axisRow}>
               <View style={s.axisHeader}>
-                <Text style={s.axisName}>{axisLabels[axis]}</Text>
+                <Text style={[s.axisName, { color: AXIS_COLOR[axis] }]}>{axisLabels[axis]}</Text>
                 <Text style={s.axisValue}>{value}</Text>
               </View>
               <View style={s.bar}>
-                <View style={{ width: `${value}%`, height: 2, backgroundColor: GOLD }} />
+                <View style={{ width: `${value}%`, height: 2, backgroundColor: AXIS_COLOR[axis] }} />
               </View>
               <Text style={s.caption}>{narrative}</Text>
             </View>
@@ -315,8 +437,7 @@ async function renderPaidPdf(req: Request) {
             </View>
           </View>
         ))}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>03</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 4 - 7. PER-AXIS DEEP DIVES — one page per axis */}
@@ -328,8 +449,16 @@ async function renderPaidPdf(req: Request) {
         const top = attribution[axis] ?? [];
         return (
           <Page key={axis} size="LETTER" style={s.page}>
-            <Text style={s.label}>Axis Deep Dive {idx + 1} of 4</Text>
+            <Text style={[s.label, { color: AXIS_COLOR[axis] }]}>Axis Deep Dive {idx + 1} of 4</Text>
             <Text style={s.pageTitle}>{axisLabels[axis]} — your score: {value}</Text>
+            {/* Big axis-coloured score chip */}
+            <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 8 }}>
+              <View style={{ width: 6, height: 38, backgroundColor: AXIS_COLOR[axis], marginRight: 10 }} />
+              <View>
+                <Text style={{ fontFamily: "Playfair", fontSize: 32, fontWeight: 700, lineHeight: 1, color: AXIS_COLOR[axis] }}>{value}</Text>
+                <Text style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, marginTop: 2 }}>{band} band · {axisLabels[axis]}</Text>
+              </View>
+            </View>
             <Text style={s.bodyEmphasis}>{narrative}</Text>
 
             <Text style={s.sectionHeading}>What this score means</Text>
@@ -375,7 +504,7 @@ async function renderPaidPdf(req: Request) {
               <Text style={s.readingBody}>{reading.practice}</Text>
             </View>
 
-            <Text style={s.watermark}>{watermark}</Text>
+            <PageChrome docId={docId} watermark={watermark} />
             <Text style={s.pageNum}>{String(4 + idx).padStart(2, "0")}</Text>
           </Page>
         );
@@ -398,8 +527,7 @@ async function renderPaidPdf(req: Request) {
             <Text style={s.bulletBody}>{name}</Text>
           </View>
         ))}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>08</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 9. HOW YOU COMPARE — vs population averages, vs runner-up */}
@@ -438,8 +566,7 @@ async function renderPaidPdf(req: Request) {
         <Text style={s.body}>
           The next-closest archetype, {match.runnerUp.name}, sits {Math.round(match.runnerUpDistance - match.distance)} units further from your position. {confidence.description}
         </Text>
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>09</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 10. HOW YOU WIN */}
@@ -455,8 +582,7 @@ async function renderPaidPdf(req: Request) {
             <Text style={s.body}>{scenario.text}</Text>
           </View>
         ))}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>10</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 11. HOW YOU LOSE */}
@@ -472,8 +598,7 @@ async function renderPaidPdf(req: Request) {
             <Text style={[s.body, { color: CRIMSON }]}>{mode.text}</Text>
           </View>
         ))}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>11</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 12. POWER PAIRINGS */}
@@ -499,8 +624,7 @@ async function renderPaidPdf(req: Request) {
         <Text style={s.sectionHeading}>Your natural enemy</Text>
         <Text style={s.bodyEmphasis}>{enemy.name} — {enemy.tagline}</Text>
         <Text style={s.body}>{archetype.enemyTactics}</Text>
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>12</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 13. 90-DAY ROADMAP */}
@@ -517,8 +641,7 @@ async function renderPaidPdf(req: Request) {
             <Text style={s.roadmapFocus}>{phase.focus}</Text>
           </View>
         ))}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>13</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 14. THE SEVEN LAWS */}
@@ -534,8 +657,7 @@ async function renderPaidPdf(req: Request) {
             <Text style={s.lawText}>{law}</Text>
           </View>
         ))}
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>14</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
       {/* 15. HIDDEN EDGE + LETTER CLOSE */}
@@ -573,8 +695,7 @@ async function renderPaidPdf(req: Request) {
         </Text>
         <Text style={s.body}>Available at wayofgods.com.</Text>
 
-        <Text style={s.watermark}>{watermark}</Text>
-        <Text style={s.pageNum}>15</Text>
+        <PageChrome docId={docId} watermark={watermark} />
       </Page>
     </Document>
   );
