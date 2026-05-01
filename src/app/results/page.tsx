@@ -738,15 +738,23 @@ function PaidUnlockCard({ archetype }: { archetype: Archetype }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ responseId }),
       });
-      const body = await res.json();
+      const text = await res.text();
+      let body: { checkoutUrl?: string; error?: string } = {};
+      try { body = JSON.parse(text); } catch { /* keep raw */ }
+
       if (!res.ok || !body.checkoutUrl) {
-        setError(body.error ?? "Could not start checkout. Try again.");
+        setError(
+          body.error
+            ? `Checkout error (${res.status}): ${body.error}`
+            : `Checkout failed (${res.status}). Server said: ${text.slice(0, 200)}`
+        );
         setLoading(false);
         return;
       }
       window.location.href = body.checkoutUrl;
-    } catch {
-      setError("Network error. Try again.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown";
+      setError(`Network error: ${msg}. Try again.`);
       setLoading(false);
     }
   };

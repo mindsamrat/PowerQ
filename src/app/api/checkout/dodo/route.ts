@@ -24,6 +24,18 @@ interface CheckoutRequest {
  *   4. Return the hosted-checkout URL; client navigates the browser to it
  */
 export async function POST(req: Request) {
+  try {
+    return await handleCheckout(req);
+  } catch (err) {
+    console.error("[checkout-dodo] uncaught", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Unexpected server error." },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleCheckout(req: Request) {
   const apiKey = process.env.DODO_API_KEY;
   const productId = process.env.DODO_PRODUCT_ID;
   const apiBase = process.env.DODO_API_BASE ?? "https://live.dodopayments.com";
@@ -49,7 +61,10 @@ export async function POST(req: Request) {
 
   const response = await getResponseById(responseId);
   if (!response) {
-    return NextResponse.json({ error: "Response not found." }, { status: 404 });
+    return NextResponse.json(
+      { error: `Response ${responseId} not found in Supabase. The quiz response was not persisted.` },
+      { status: 404 }
+    );
   }
 
   const origin = new URL(req.url).origin;
