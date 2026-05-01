@@ -105,8 +105,35 @@ export async function POST(req: Request) {
 
   const type = event.type ?? event.event_type ?? "";
   const data = (event.data ?? {}) as Record<string, unknown>;
-  const metadata = (data.metadata ?? {}) as Record<string, unknown>;
-  const responseId = typeof metadata.response_id === "string" ? metadata.response_id : null;
+
+  // Dodo nests `metadata` under different keys depending on the event shape:
+  //   - data.metadata
+  //   - data.object.metadata
+  //   - data.payment.metadata
+  //   - data (top-level on some versions)
+  // Also try the top-level event object as a last resort.
+  const candidates: Record<string, unknown>[] = [];
+  if (data.metadata && typeof data.metadata === "object") candidates.push(data.metadata as Record<string, unknown>);
+  if (data.object && typeof data.object === "object") {
+    const obj = data.object as Record<string, unknown>;
+    if (obj.metadata && typeof obj.metadata === "object") candidates.push(obj.metadata as Record<string, unknown>);
+  }
+  if (data.payment && typeof data.payment === "object") {
+    const pay = data.payment as Record<string, unknown>;
+    if (pay.metadata && typeof pay.metadata === "object") candidates.push(pay.metadata as Record<string, unknown>);
+  }
+  const eventTop = event as unknown as Record<string, unknown>;
+  if (eventTop.metadata && typeof eventTop.metadata === "object") candidates.push(eventTop.metadata as Record<string, unknown>);
+
+  let responseId: string | null = null;
+  for (const md of candidates) {
+    if (typeof md.response_id === "string") {
+      responseId = md.response_id;
+      break;
+    }
+  }
+
+  console.log("[dodo-webhook] received", { type, responseId, metadataPaths: candidates.length });
 
   if (type === "payment.succeeded" || type === "payment.completed") {
     if (!responseId) {

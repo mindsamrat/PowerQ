@@ -48,12 +48,13 @@ function PaidPage() {
           return;
         }
 
-        if (attempts >= 12) {
-          // ~36 seconds elapsed. Webhook usually fires within 5s. Show a
-          // graceful 'still processing' state instead of polling forever.
+        if (attempts >= 20) {
+          // ~60 seconds elapsed. Webhook usually fires within 5s. Show a
+          // graceful 'still processing' state with a manual refresh option.
           setState({
             status: "pending",
-            message: "Your payment was received. The report is being prepared and will land in your inbox shortly.",
+            message:
+              "Your payment was received. We're still confirming it with Dodo — this usually takes a few seconds. Refresh this page in a moment to download.",
           });
           return;
         }
@@ -102,7 +103,7 @@ function PaidPage() {
               Your report is ready.
             </h1>
             <p className="text-text-muted/60 text-sm md:text-base mb-10 font-[family-name:var(--font-body)] leading-relaxed">
-              The full PQ Power Profile — your archetype across love, money, conflict, and legacy — is below. We've also emailed you a copy.
+              The full PQ Power Profile — your archetype across love, money, conflict, and legacy — is one click away. Bookmark this page so you can return to it.
             </p>
             <a
               href={state.pdfUrl}
