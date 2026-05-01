@@ -361,6 +361,82 @@ async function renderPaidPdf(req: Request) {
         <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
+      {/* 1b. TABLE OF CONTENTS */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Contents</Text>
+        <Text style={s.pageTitle}>What is in this report.</Text>
+        <View style={{ marginTop: 6 }}>
+          {[
+            { n: "I", title: "Methodology", sub: "How the assessment scores you" },
+            { n: "II", title: "The Verdict", sub: "Your archetype, named and explained" },
+            { n: "III", title: "Power Signature", sub: "4 axes, your radar, your blend" },
+            { n: "IV", title: "Per-Axis Deep Dives", sub: "One page per axis: framework, your top answers, strength / warning / practice" },
+            { n: "V", title: "The Archetype", sub: "History, totem, named historical figures" },
+            { n: "VI", title: "How You Compare", sub: "Your scores vs midpoint, vs centroid, vs runner-up" },
+            { n: "VII", title: "How You Win", sub: "Three contexts your archetype dominates" },
+            { n: "VIII", title: "How You Lose", sub: "The historical failure modes" },
+            { n: "IX", title: "Power Pairings", sub: "Who amplifies you, who drains you" },
+            { n: "X", title: "90-Day Roadmap", sub: "A tailored 3-phase plan" },
+            { n: "XI", title: "The Seven Laws", sub: "Imperatives specific to your archetype" },
+            { n: "XII", title: "Per-Question Analysis", sub: "Every choice you made and what it probed" },
+            { n: "XIII", title: "Hidden Edge & Closing", sub: "Your free-text in our analysis, plus a personal close" },
+            { n: "XIV", title: "Appendix", sub: "Glossary, frameworks, methodology footnotes" },
+          ].map((row, i) => (
+            <View key={i} style={{ flexDirection: "row", marginBottom: 9, paddingBottom: 9, borderBottom: "0.5px solid #EEE" }}>
+              <Text style={{ fontFamily: "Playfair", fontWeight: 700, fontSize: 13, color: CRIMSON, width: 32 }}>{row.n}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontFamily: "Playfair", fontSize: 13, color: INK, fontWeight: 700 }}>{row.title}</Text>
+                <Text style={{ fontSize: 10, color: SUB, fontStyle: "italic", marginTop: 1 }}>{row.sub}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 1c. METHODOLOGY */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>I · Methodology</Text>
+        <Text style={s.pageTitle}>How this report was built.</Text>
+        <Text style={s.body}>
+          The Power Quotient (PQ) Assessment is a 27-question proprietary diagnostic that maps respondents across four orthogonal axes of behavioural power. It is not a Big Five derivative. It synthesises multiple research traditions specifically calibrated to predict how an individual exerts and conserves power across professional and intimate contexts.
+        </Text>
+
+        <Text style={s.sectionHeading}>The four axes</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 8 }}>
+          {axesOrdered.map((axis) => (
+            <View key={axis} style={{ width: "50%", paddingRight: 8, marginBottom: 10 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 3 }}>
+                <View style={{ width: 4, height: 12, backgroundColor: AXIS_COLOR[axis], marginRight: 6 }} />
+                <Text style={{ fontFamily: "Playfair", fontSize: 12, fontWeight: 700, color: INK }}>{axisLabels[axis]}</Text>
+              </View>
+              <Text style={{ fontSize: 9.5, color: SUB, lineHeight: 1.5 }}>
+                {axis === "control" && "Direct command vs sideways influence. Probes how willing you are to issue explicit orders versus shape outcomes through structure or charm."}
+                {axis === "visibility" && "Public vs invisible authority. Probes whether you want power seen and credited, or whether you accumulate leverage through anonymity."}
+                {axis === "timeHorizon" && "Tactical-now vs strategic-later. Probes how heavily you discount future outcomes against immediate ones."}
+                {axis === "powerSource" && "Force vs magnetism. Probes whether your influence is consequence-based (people calculate the cost of crossing you) or attraction-based (people move toward you)."}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        <Text style={s.sectionHeading}>Scoring formula</Text>
+        <Text style={s.body}>
+          Every option on every choice question carries 1-3 axis deltas in the range −20 to +20. Each axis starts at 50 (neutral). Your final axis score is the cumulative sum, clamped to 0–100. Your PQ Score is a weighted composite (Control 0.30 + Time-Horizon 0.25 + Power-Source 0.25 + Visibility 0.20). Your archetype is the closest centroid in 4-dimensional space (Euclidean distance). Confidence reflects the gap to the runner-up archetype.
+        </Text>
+
+        <Text style={s.sectionHeading}>Research traditions cited</Text>
+        <Text style={s.body}>
+          Each question is grounded in a recognised psychology / behavioural-economics tradition. You will see specific citations on the per-axis pages. Notable frameworks: Snyder&apos;s Self-Monitoring Scale (1974), McClelland&apos;s Need for Power (1975), Rotter&apos;s Locus of Control (1966), Kahneman &amp; Tversky&apos;s Prospect Theory (1979), Strathman&apos;s Consideration of Future Consequences (1994), Higgins&apos; Regulatory Focus Theory (1997), French &amp; Raven&apos;s Bases of Social Power (1959), Goffman&apos;s Impression Management (1959), Cialdini&apos;s Influence Mechanisms (1984), Granovetter&apos;s Strong vs Weak Ties (1973).
+        </Text>
+
+        <Text style={s.sectionHeading}>What this report is not</Text>
+        <Text style={s.body}>
+          A clinical diagnosis. A prediction of life outcomes. A measure of intelligence or competence. The PQ classifies <Text style={{ fontStyle: "italic" }}>how</Text> you exert power, not <Text style={{ fontStyle: "italic" }}>how much</Text> you have.
+        </Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
       {/* 2. THE VERDICT — validating opener */}
       <Page size="LETTER" style={s.page}>
         <Text style={s.label}>The Verdict</Text>
@@ -657,6 +733,120 @@ async function renderPaidPdf(req: Request) {
             <Text style={s.lawText}>{law}</Text>
           </View>
         ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 14b. PER-QUESTION ANALYSIS — every choice on one page */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>XII · Per-Question Analysis</Text>
+        <Text style={s.pageTitle}>Every choice. What it probed. Where it pulled.</Text>
+        <Text style={s.body}>
+          Below is the full audit trail of your scored answers. Each row names the research tradition the question maps to and the net axis impact of your choice. This is the data the engine ran your archetype on.
+        </Text>
+
+        {/* Table header */}
+        <View style={{ flexDirection: "row", marginTop: 8, marginBottom: 4, paddingBottom: 4, borderBottom: `1px solid ${GOLD}` }}>
+          <Text style={{ width: "44%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Question · Framework</Text>
+          <Text style={{ width: "40%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Your answer</Text>
+          <Text style={{ width: "16%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700, textAlign: "right" }}>Net Δ</Text>
+        </View>
+
+        {answers.map((a, idx) => {
+          const q = questions.find((qq) => qq.id === a.q);
+          if (!q || q.kind === "free-text" || q.kind === "email") return null;
+          const opt = q.options.find((o) => o.id === a.o);
+          const totalDelta = (a.d.control ?? 0) + (a.d.visibility ?? 0) + (a.d.timeHorizon ?? 0) + (a.d.powerSource ?? 0);
+          const dominantAxis = (Object.keys(a.d) as AxisId[]).reduce((best, ax) =>
+            Math.abs(a.d[ax] ?? 0) > Math.abs(a.d[best] ?? 0) ? ax : best,
+            "control" as AxisId
+          );
+          return (
+            <View
+              key={idx}
+              style={{
+                flexDirection: "row",
+                marginBottom: 4,
+                paddingVertical: 4,
+                paddingHorizontal: 4,
+                backgroundColor: idx % 2 === 0 ? PAPER : "#FFFFFF",
+                borderLeft: `2px solid ${AXIS_COLOR[dominantAxis]}`,
+              }}
+            >
+              <View style={{ width: "44%", paddingRight: 6 }}>
+                <Text style={{ fontSize: 8.5, color: INK, lineHeight: 1.3 }}>{q.prompt}</Text>
+                {q.framework && (
+                  <Text style={{ fontSize: 7, color: GOLD, marginTop: 2, letterSpacing: 0.5 }}>
+                    {q.framework.name} · {q.framework.citation}
+                  </Text>
+                )}
+              </View>
+              <View style={{ width: "40%", paddingRight: 6 }}>
+                <Text style={{ fontSize: 8.5, color: SUB, fontStyle: "italic", lineHeight: 1.3 }}>
+                  &ldquo;{opt?.text ?? "—"}&rdquo;
+                </Text>
+              </View>
+              <Text style={{
+                width: "16%",
+                fontSize: 9,
+                fontFamily: "DM Sans",
+                fontWeight: 700,
+                textAlign: "right",
+                color: totalDelta > 0 ? CRIMSON_DEEP : totalDelta < 0 ? "#3F5F7E" : SUB,
+                paddingTop: 2,
+              }}>
+                {totalDelta > 0 ? "+" : ""}{totalDelta}
+              </Text>
+            </View>
+          );
+        })}
+
+        <Text style={[s.caption, { marginTop: 10 }]}>
+          Net Δ is the sum of axis deltas for the option you chose. Positive net values indicate the choice pulled toward force / control / visibility / patience; negative values toward magnetism / autonomy / invisibility / urgency. The colour stripe shows the dominant axis for that question.
+        </Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 14c. APPENDIX — Glossary + frameworks list */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>XIV · Appendix</Text>
+        <Text style={s.pageTitle}>Glossary &amp; framework reference.</Text>
+
+        <Text style={s.sectionHeading}>Axis glossary</Text>
+        {axesOrdered.map((axis) => (
+          <View key={axis} style={{ marginBottom: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 2 }}>
+              <View style={{ width: 4, height: 12, backgroundColor: AXIS_COLOR[axis], marginRight: 6 }} />
+              <Text style={{ fontFamily: "Playfair", fontSize: 12, fontWeight: 700 }}>{axisLabels[axis]}</Text>
+            </View>
+            <Text style={{ fontSize: 10, color: SUB, lineHeight: 1.5 }}>
+              <Text style={{ fontStyle: "italic" }}>Low (0–33):</Text> {axisNarratives[axis].low}
+              {"\n"}
+              <Text style={{ fontStyle: "italic" }}>Mid (34–66):</Text> {axisNarratives[axis].mid}
+              {"\n"}
+              <Text style={{ fontStyle: "italic" }}>High (67–100):</Text> {axisNarratives[axis].high}
+            </Text>
+          </View>
+        ))}
+
+        <View style={s.divider} />
+
+        <Text style={s.sectionHeading}>Confidence levels</Text>
+        <Text style={s.body}>
+          <Text style={{ fontWeight: 700 }}>Strong match.</Text> Distance gap to runner-up archetype is 18 units or more. The diagnosis is unambiguous.{"\n"}
+          <Text style={{ fontWeight: 700 }}>Clear match.</Text> Gap of 9–17 units. Dominant pattern with a measurable secondary lean.{"\n"}
+          <Text style={{ fontWeight: 700 }}>Borderline.</Text> Gap under 9 units. Re-take in 3 months — most respondents drift toward one of the two over time.
+        </Text>
+
+        <Text style={s.sectionHeading}>Limits of this assessment</Text>
+        <Text style={s.body}>
+          Self-report assessments suffer from social desirability bias and impression management. The PQ mitigates this by offering options that are equally compelling for different archetypes, but no scale eliminates the effect. Treat this report as a hypothesis to test against your own behaviour, not a verdict.
+        </Text>
+
+        <Text style={s.sectionHeading}>Rarity caveat</Text>
+        <Text style={s.body}>
+          Archetype rarity percentages are framework estimates, not sample-derived. They will be recomputed from real respondent data once the live distribution exceeds 5,000 completions.
+        </Text>
+
         <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
