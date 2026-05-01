@@ -112,28 +112,28 @@ export async function POST(req: Request) {
   //   - data.payment.metadata
   //   - data (top-level on some versions)
   // Also try the top-level event object as a last resort.
-  const candidates: Record<string, unknown>[] = [];
-  if (data.metadata && typeof data.metadata === "object") candidates.push(data.metadata as Record<string, unknown>);
+  const metadataPaths: Record<string, unknown>[] = [];
+  if (data.metadata && typeof data.metadata === "object") metadataPaths.push(data.metadata as Record<string, unknown>);
   if (data.object && typeof data.object === "object") {
     const obj = data.object as Record<string, unknown>;
-    if (obj.metadata && typeof obj.metadata === "object") candidates.push(obj.metadata as Record<string, unknown>);
+    if (obj.metadata && typeof obj.metadata === "object") metadataPaths.push(obj.metadata as Record<string, unknown>);
   }
   if (data.payment && typeof data.payment === "object") {
     const pay = data.payment as Record<string, unknown>;
-    if (pay.metadata && typeof pay.metadata === "object") candidates.push(pay.metadata as Record<string, unknown>);
+    if (pay.metadata && typeof pay.metadata === "object") metadataPaths.push(pay.metadata as Record<string, unknown>);
   }
   const eventTop = event as unknown as Record<string, unknown>;
-  if (eventTop.metadata && typeof eventTop.metadata === "object") candidates.push(eventTop.metadata as Record<string, unknown>);
+  if (eventTop.metadata && typeof eventTop.metadata === "object") metadataPaths.push(eventTop.metadata as Record<string, unknown>);
 
   let responseId: string | null = null;
-  for (const md of candidates) {
+  for (const md of metadataPaths) {
     if (typeof md.response_id === "string") {
       responseId = md.response_id;
       break;
     }
   }
 
-  console.log("[dodo-webhook] received", { type, responseId, metadataPaths: candidates.length });
+  console.log("[dodo-webhook] received", { type, responseId, metadataPaths: metadataPaths.length });
 
   if (type === "payment.succeeded" || type === "payment.completed") {
     if (!responseId) {
