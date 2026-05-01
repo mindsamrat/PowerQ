@@ -24,8 +24,8 @@ export async function GET() {
   const payload = {
     payment_link: true,
     product_cart: [{ product_id: productId, quantity: 1 }],
-    customer: { email: "ping@example.com" },
-    billing: { country: "US" },
+    customer: { email: "ping@example.com", name: "Ping Diagnostic" },
+    billing: { country: "US", city: "N/A", state: "N/A", street: "N/A", zipcode: "00000" },
     return_url: "https://quiz.wayofgods.com/paid?ping=1",
     metadata: { response_id: "debug-ping" },
   };

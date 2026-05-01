@@ -73,14 +73,31 @@ async function handleCheckout(req: Request) {
   // Dodo's payments endpoint (one-time). Field names below match the
   // public Dodo API; if your dashboard surface uses different names,
   // these are the only places to adjust.
+  // Dodo's CustomerRequest is an untagged enum: either { customer_id } for
+  // an existing customer, or { email, name, [phone_number] } to create a new
+  // one. Email-only is rejected. Derive a sensible display name from the
+  // local-part of the email so we always satisfy the schema.
+  const localPart = response.email.split("@")[0] ?? "Customer";
+  const customerName = localPart
+    .replace(/[._-]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((w: string) => w[0].toUpperCase() + w.slice(1))
+    .join(" ") || "Customer";
+
   const dodoPayload = {
     payment_link: true,
     product_cart: [{ product_id: productId, quantity: 1 }],
     customer: {
       email: response.email,
+      name: customerName,
     },
     billing: {
       country: "US",
+      city: "N/A",
+      state: "N/A",
+      street: "N/A",
+      zipcode: "00000",
     },
     return_url: returnUrl,
     metadata: {
