@@ -3,14 +3,35 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 let cached: SupabaseClient | null = null;
 
 /**
+ * Normalise the Supabase URL pulled from env. Strips whitespace (including
+ * stray newlines from copy-paste), trims trailing slashes, and forces https
+ * if someone pasted the bare hostname. Returns null if the result can't
+ * plausibly be a Supabase project URL.
+ */
+function normaliseSupabaseUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  let v = raw.trim();
+  if (!v) return null;
+  if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
+  v = v.replace(/\/+$/, "");
+  try {
+    const u = new URL(v);
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Server-only Supabase client backed by the SECRET / service-role key.
  * Returns null if env vars aren't configured so callers can fall back gracefully.
  */
 export function getServerSupabase(): SupabaseClient | null {
   if (cached) return cached;
 
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const url = normaliseSupabaseUrl(process.env.SUPABASE_URL);
+  const rawKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const key = rawKey?.trim();
   if (!url || !key) return null;
 
   cached = createClient(url, key, {
@@ -36,27 +57,39 @@ export async function saveResponseToSupabase(row: ResponseRow): Promise<string |
   const sb = getServerSupabase();
   if (!sb) return null; // env not configured -> caller decides fallback
 
-  const { data, error } = await sb
-    .from("responses")
-    .insert({
-      name: row.name,
-      email: row.email,
-      archetype_id: row.archetypeId,
-      pq_score: row.pq,
-      scores: row.scores,
-      answers: row.answers,
-      free_text: row.freeText,
-      user_agent: row.userAgent ?? null,
-      ip_address: row.ipAddress ?? null,
-      payment_status: "unpaid",
-    })
-    .select("id")
-    .single();
+  // Wrap the actual call in try/catch so a transport failure (TypeError:
+  // fetch failed — usually a paused project, bad URL, or DNS) surfaces with
+  // a recognisable message instead of bubbling up as a generic TypeError.
+  let result: { data: { id: string } | null; error: unknown };
+  try {
+    result = await sb
+      .from("responses")
+      .insert({
+        name: row.name,
+        email: row.email,
+        archetype_id: row.archetypeId,
+        pq_score: row.pq,
+        scores: row.scores,
+        answers: row.answers,
+        free_text: row.freeText,
+        user_agent: row.userAgent ?? null,
+        ip_address: row.ipAddress ?? null,
+        payment_status: "unpaid",
+      })
+      .select("id")
+      .single();
+  } catch (transportErr) {
+    const detail = transportErr instanceof Error ? transportErr.message : "unknown transport error";
+    throw new Error(
+      `Supabase unreachable from this deployment (${detail}). Check that SUPABASE_URL is correct in Vercel and that the Supabase project is not paused.`
+    );
+  }
+
+  const { data, error } = result;
 
   if (error) {
-    // Surface the real error so /api/subscribe can include it in its 500 response
-    // instead of silently falling back to local storage.
-    throw new Error(error.message || "supabase insert failed");
+    const message = (error as { message?: string }).message ?? "supabase insert failed";
+    throw new Error(message);
   }
   return data?.id ?? null;
 }
