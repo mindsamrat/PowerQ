@@ -770,7 +770,7 @@ function PaidUnlockCard({ archetype }: { archetype: Archetype }) {
           Unlock your full analysis.
         </h3>
         <p className="text-text-muted/50 text-sm mb-8 font-[family-name:var(--font-body)] max-w-sm mx-auto">
-          A 24-page personalized report: {archetype.name} across love, money,
+          A 19-page personalized report: {archetype.name} across love, money,
           leadership, enemies, and legacy. Quotes your actual answers. Watermarked
           to your email.
         </p>

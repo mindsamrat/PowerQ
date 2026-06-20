@@ -1,5 +1,28 @@
 import { NextResponse } from "next/server";
 import { getResponseById } from "@/lib/supabase-server";
+import { getClientIp } from "@/lib/rate-limit";
+
+const CHECKOUT_PER_IP_PER_HOUR = 10;
+const CHECKOUT_WINDOW_MS = 60 * 60 * 1000;
+// In-memory checkout counter. Adequate because Vercel keeps lambda instances
+// warm for minutes at a time and the limit is generous; serious abusers also
+// hit the per-IP quiz-submission limit which is database-backed.
+const checkoutBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function bumpCheckoutCount(ip: string): { allowed: boolean; resetAt: number } {
+  const now = Date.now();
+  const existing = checkoutBuckets.get(ip);
+  if (!existing || existing.resetAt < now) {
+    const fresh = { count: 1, resetAt: now + CHECKOUT_WINDOW_MS };
+    checkoutBuckets.set(ip, fresh);
+    return { allowed: true, resetAt: fresh.resetAt };
+  }
+  existing.count += 1;
+  return {
+    allowed: existing.count <= CHECKOUT_PER_IP_PER_HOUR,
+    resetAt: existing.resetAt,
+  };
+}
 
 export const runtime = "nodejs";
 
@@ -59,12 +82,38 @@ async function handleCheckout(req: Request) {
     return NextResponse.json({ error: "Missing responseId." }, { status: 400 });
   }
 
+  // Per-IP rate limit so a leaked responseId can't be used to spam checkout
+  // sessions (which would otherwise charge nothing but exhaust quotas).
+  const ip = getClientIp(req);
+  if (ip) {
+    const { allowed, resetAt } = bumpCheckoutCount(ip);
+    if (!allowed) {
+      const retryAfter = Math.ceil((resetAt - Date.now()) / 1000);
+      return NextResponse.json(
+        { error: "Too many checkout attempts. Try again in an hour." },
+        { status: 429, headers: { "Retry-After": String(Math.max(retryAfter, 60)) } }
+      );
+    }
+  }
+
   const response = await getResponseById(responseId);
   if (!response) {
     return NextResponse.json(
-      { error: `Response ${responseId} not found in Supabase. The quiz response was not persisted.` },
+      { error: "Quiz response not found. Please retake the quiz." },
       { status: 404 }
     );
+  }
+
+  // Idempotency: if already paid, don't issue another payment session — point
+  // the user at /paid so they download the existing PDF instead.
+  if (response.payment_status === "paid") {
+    const origin = new URL(req.url).origin;
+    return NextResponse.json({
+      ok: true,
+      checkoutUrl: `${origin}/paid?response_id=${encodeURIComponent(responseId)}`,
+      paymentId: null,
+      alreadyPaid: true,
+    });
   }
 
   const origin = new URL(req.url).origin;

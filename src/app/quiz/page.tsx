@@ -180,13 +180,23 @@ export default function QuizPage() {
           if (body.responseId) sessionStorage.setItem("pq_response_id", body.responseId);
         } catch { /* ignore */ }
 
+        // Prefer the server-computed result so the URL matches Supabase.
+        // Falls back to the local finalize() output if the server didn't echo one.
+        const serverResult = body.result ?? null;
+        const archetypeId = serverResult?.archetypeId ?? finalResult.match.archetype.id;
+        const c = serverResult?.scores?.control ?? finalResult.scores.control;
+        const v = serverResult?.scores?.visibility ?? finalResult.scores.visibility;
+        const t = serverResult?.scores?.timeHorizon ?? finalResult.scores.timeHorizon;
+        const p = serverResult?.scores?.powerSource ?? finalResult.scores.powerSource;
+        const pqVal = serverResult?.pq ?? finalResult.pq;
+
         const qs = new URLSearchParams({
-          id: finalResult.match.archetype.id,
-          c: String(finalResult.scores.control),
-          v: String(finalResult.scores.visibility),
-          t: String(finalResult.scores.timeHorizon),
-          p: String(finalResult.scores.powerSource),
-          pq: String(finalResult.pq),
+          id: archetypeId,
+          c: String(c),
+          v: String(v),
+          t: String(t),
+          p: String(p),
+          pq: String(pqVal),
         });
         router.push(`/results?${qs.toString()}`);
         return { ok: true };
