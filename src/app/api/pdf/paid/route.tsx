@@ -362,12 +362,96 @@ async function renderPaidPdf(req: Request) {
         <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
+      {/* 1a. EXECUTIVE SUMMARY — TL;DR for skimmers */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Executive Summary</Text>
+        <Text style={s.pageTitle}>The one-page version, {personalName}.</Text>
+
+        {/* Headline numbers */}
+        <View style={{ flexDirection: "row", marginVertical: 10 }}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Archetype</Text>
+            <Text style={{ fontFamily: "Playfair", fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.name.replace(/^The /, "")}</Text>
+            <Text style={{ fontSize: 9, color: SUB, marginTop: 4, fontStyle: "italic" }}>{archetype.tagline}</Text>
+          </View>
+          <View style={{ width: 100, alignItems: "center", borderLeft: `1px solid ${PAPER_DARK}`, paddingLeft: 14 }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>PQ</Text>
+            <Text style={{ fontFamily: "Playfair", fontSize: 36, fontWeight: 700, color: CRIMSON, lineHeight: 1 }}>{pq}</Text>
+            <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>/ 100</Text>
+          </View>
+          <View style={{ width: 100, alignItems: "center", borderLeft: `1px solid ${PAPER_DARK}`, paddingLeft: 14 }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Rarity</Text>
+            <Text style={{ fontFamily: "Playfair", fontSize: 36, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.rarity}%</Text>
+            <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>{ordinal(rank)} rarest</Text>
+          </View>
+        </View>
+
+        {/* Four-axis at-a-glance scorecard */}
+        <Text style={s.sectionHeading}>Your scorecard</Text>
+        <View style={{ marginVertical: 4 }}>
+          {/* Table header */}
+          <View style={{ flexDirection: "row", paddingBottom: 4, borderBottom: `1px solid ${GOLD}` }}>
+            <Text style={{ width: "32%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Axis</Text>
+            <Text style={{ width: "16%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700, textAlign: "right" }}>Score</Text>
+            <Text style={{ width: "18%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700, textAlign: "center" }}>Band</Text>
+            <Text style={{ width: "34%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Reading</Text>
+          </View>
+          {axesOrdered.map((axis, i) => {
+            const value = scores[axis];
+            const band = bandFor(value);
+            return (
+              <View key={axis} style={{ flexDirection: "row", paddingVertical: 5, backgroundColor: i % 2 === 0 ? PAPER : "#FFFFFF", paddingHorizontal: 4, borderLeft: `2px solid ${AXIS_COLOR[axis]}` }}>
+                <Text style={{ width: "32%", fontSize: 10.5, color: INK, fontWeight: 700, paddingTop: 2 }}>{axisLabels[axis]}</Text>
+                <Text style={{ width: "16%", fontFamily: "Playfair", fontSize: 14, fontWeight: 700, color: AXIS_COLOR[axis], textAlign: "right", paddingTop: 1 }}>{value}</Text>
+                <Text style={{ width: "18%", fontSize: 9.5, color: SUB, textAlign: "center", textTransform: "uppercase", letterSpacing: 1, paddingTop: 3 }}>{band}</Text>
+                <Text style={{ width: "34%", fontSize: 9.5, color: SUB, paddingTop: 3, lineHeight: 1.3 }}>
+                  {value >= 67 ? "Pronounced" : value <= 33 ? "Inverted" : "Balanced"}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Three lines: top strength, top risk, one move */}
+        <Text style={s.sectionHeading}>The three sentences worth reading</Text>
+        {(() => {
+          const topAxis = axesOrdered.reduce(
+            (best, ax) => (Math.abs(scores[ax] - 50) > Math.abs(scores[best] - 50) ? ax : best),
+            axesOrdered[0]
+          );
+          const topReading = readings.find((r) => r.axis === topAxis)!;
+          return (
+            <>
+              <View style={s.readingRow}>
+                <Text style={[s.readingLabel, { color: GOLD_LIGHT }]}>Edge</Text>
+                <Text style={s.readingBody}>{topReading.strength}</Text>
+              </View>
+              <View style={s.readingRow}>
+                <Text style={[s.readingLabel, { color: CRIMSON }]}>Risk</Text>
+                <Text style={s.readingBody}>{topReading.warning}</Text>
+              </View>
+              <View style={s.readingRow}>
+                <Text style={[s.readingLabel, { color: GOLD }]}>Move</Text>
+                <Text style={s.readingBody}>{topReading.practice}</Text>
+              </View>
+            </>
+          );
+        })()}
+
+        <Text style={[s.caption, { marginTop: 12 }]}>
+          The pages that follow walk through the methodology, every axis in depth, the answers that produced each score, a 90-day plan, and a personalised close. If you stop reading here, the three lines above are the report in miniature.
+        </Text>
+
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
       {/* 1b. TABLE OF CONTENTS */}
       <Page size="LETTER" style={s.page}>
         <Text style={s.label}>Contents</Text>
         <Text style={s.pageTitle}>What is in this report.</Text>
         <View style={{ marginTop: 6 }}>
           {[
+            { n: "—", title: "Executive Summary", sub: "The one-page version: scorecard, top edge, top risk, one move" },
             { n: "I", title: "Methodology", sub: "How the assessment scores you" },
             { n: "II", title: "The Verdict", sub: "Your archetype, named and explained" },
             { n: "III", title: "Power Signature", sub: "4 axes, your radar, your blend" },
@@ -686,13 +770,13 @@ async function renderPaidPdf(req: Request) {
           Archetypes interact predictably. Some compound your power; others dilute it. Choose collaborators with this in mind.
         </Text>
 
-        <View style={s.pairCard}>
+        <View wrap={false} style={s.pairCard}>
           <Text style={s.pairTitle}>Amplifies you</Text>
           <Text style={s.pairArchetype}>{ampArch?.name ?? archetype.pairings.amplifies.id}</Text>
           <Text style={s.pairReason}>{archetype.pairings.amplifies.reason}</Text>
         </View>
 
-        <View style={s.pairCard}>
+        <View wrap={false} style={s.pairCard}>
           <Text style={s.pairTitle}>Drains you</Text>
           <Text style={s.pairArchetype}>{drainArch?.name ?? archetype.pairings.drains.id}</Text>
           <Text style={s.pairReason}>{archetype.pairings.drains.reason}</Text>
@@ -729,7 +813,7 @@ async function renderPaidPdf(req: Request) {
           {archetype.name}s tend to share specific patterns across work, relationships, and decision-making. Read these slowly. The point isn&apos;t flattery — it&apos;s recognition. If three of these read as accurate, the diagnosis is doing its job.
         </Text>
         {archetype.lifePatterns.map((p, i) => (
-          <View key={i} style={{ marginBottom: 14, padding: 12, backgroundColor: PAPER, borderLeft: `2px solid ${CRIMSON}` }}>
+          <View key={i} wrap={false} style={{ marginBottom: 14, padding: 12, backgroundColor: PAPER, borderLeft: `2px solid ${CRIMSON}` }}>
             <Text style={{ fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", color: CRIMSON, marginBottom: 4, fontWeight: 700 }}>
               {p.context}
             </Text>
