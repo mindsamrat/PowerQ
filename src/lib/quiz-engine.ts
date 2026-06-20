@@ -29,18 +29,78 @@ const freeText = questions.filter((q): q is FreeTextQuestion => q.kind === "free
 const email = questions.filter((q): q is EmailQuestion => q.kind === "email");
 
 /**
- * Build the served-question plan for this user.
- *
- * Order:
- *   1. Calibration (5)  — fixed, all users see these in the same order
- *   2. Branched pool    — currently all served; will sub-select once bank grows past ~30
- *   3. Tiebreakers      — currently all served; will be conditional on score gap
- *   4. Free-text        — optional descriptive prompts
- *   5. Email            — required final step before results unlock
+ * Build the maximum plan a user can see: all calibration + branched +
+ * tiebreaker + free-text + email questions in order. The tiebreaker block is
+ * conditionally skipped at runtime by nextServableCursor() when the interim
+ * archetype match is unambiguous — so most users complete in ~22 questions
+ * even though the plan length is 27.
  */
 export function buildQuizPlan(_seed?: string): Question[] {
   void _seed;
   return [...calibration, ...branched, ...tiebreakers, ...freeText, ...email];
+}
+
+/** Minimum runner-up gap required to skip the tiebreaker block. */
+const TIEBREAKER_SKIP_GAP = 8;
+
+/**
+ * How many further steps (questions actually served) lie ahead, given the
+ * current progress. Used by the UI's progress bar so the "12 / 24" counter
+ * stays honest even when tiebreakers will be skipped.
+ */
+export function remainingServedSteps(
+  fromCursor: number,
+  plan: Question[],
+  progress: QuizProgress
+): number {
+  let i = fromCursor;
+  let count = 0;
+  while (i < plan.length) {
+    const next = nextServableCursor(i, plan, progress);
+    if (next >= plan.length) break;
+    count += 1;
+    i = next + 1;
+  }
+  return count;
+}
+
+/**
+ * Advance the cursor past any question that no longer needs to be served.
+ *
+ * Right now the only adaptive rule is: skip the tiebreaker questions once
+ * the user's interim archetype match has a runner-up gap of at least 8
+ * units. This drops the typical served-question count from 27 down to ~22
+ * without sacrificing match quality.
+ *
+ * Returns the index of the next question the UI should render. Returns
+ * `plan.length` when there's nothing left.
+ */
+export function nextServableCursor(
+  fromCursor: number,
+  plan: Question[],
+  progress: QuizProgress
+): number {
+  let i = fromCursor;
+  while (i < plan.length) {
+    const q = plan[i];
+    if (q.kind !== "tiebreaker") return i;
+
+    // Only evaluate the skip rule once we actually have data to evaluate on.
+    if (progress.choiceAnswers.length < 10) return i;
+
+    const deltas = progress.choiceAnswers.map((a) => a.delta);
+    const interim = calculateAxisScores(deltas);
+    const match = matchArchetype(interim);
+    const gap = match.runnerUpDistance - match.distance;
+
+    if (gap >= TIEBREAKER_SKIP_GAP) {
+      // Confidently matched — skip every contiguous tiebreaker that follows.
+      i += 1;
+      continue;
+    }
+    return i;
+  }
+  return i;
 }
 
 export function getQuestionById(id: string): Question | undefined {

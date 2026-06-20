@@ -7,6 +7,8 @@ import {
   deltaFromChoice,
   emptyProgress,
   finalize,
+  nextServableCursor,
+  remainingServedSteps,
   type ChoiceAnswer,
   type FreeTextAnswer,
   type QuizProgress,
@@ -77,12 +79,17 @@ export default function QuizPage() {
 
   const advance = useCallback(
     (nextProgress: QuizProgress) => {
-      if (cursor < plan.length - 1) {
+      // Adaptive: pick the next question that actually needs to be served.
+      // Right now this skips the tiebreaker block when the interim archetype
+      // match has a clear gap to the runner-up.
+      const candidate = nextServableCursor(cursor + 1, plan, nextProgress);
+
+      if (candidate < plan.length) {
         setTransitioning(true);
         setVisible(false);
         window.setTimeout(() => {
           setProgress(nextProgress);
-          setCursor((c) => c + 1);
+          setCursor(candidate);
           setVisible(true);
           window.setTimeout(() => setTransitioning(false), 50);
         }, 320);
@@ -208,8 +215,12 @@ export default function QuizPage() {
   );
 
   const current = plan[cursor];
-  const step = cursor + 1;
-  const total = plan.length;
+  // The number of questions already answered + this one, vs the projected
+  // total once tiebreaker-skipping is accounted for. Stays honest if the
+  // adaptive engine skips a block mid-quiz.
+  const answeredCount = progress.choiceAnswers.length + progress.freeTextAnswers.length;
+  const step = answeredCount + 1;
+  const total = step + Math.max(0, remainingServedSteps(cursor + 1, plan, progress));
   const progressPct = (step / total) * 100;
 
   useEffect(() => {
