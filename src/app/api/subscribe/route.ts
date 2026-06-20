@@ -189,9 +189,10 @@ export async function POST(req: Request) {
         ipAddress: ip,
       });
     } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown";
       console.error("[subscribe] supabase write failed", err);
       return NextResponse.json(
-        { error: "Could not save your response. Please try again." },
+        { error: `Could not save your response: ${detail}` },
         { status: 500 }
       );
     }

@@ -45,16 +45,58 @@ export async function checkResponsesPerIp(
  * Pulls the client IP out of the request. Prefer x-forwarded-for (the first
  * entry is the real client; later ones are proxies) and fall back to other
  * common header names. Returns null when we genuinely can't tell.
+ *
+ * Always passes the result through sanitizeIp() so the value is acceptable
+ * to Postgres `inet` columns (strips port suffixes, IPv6 brackets, rejects
+ * malformed strings).
  */
 export function getClientIp(req: Request): string | null {
   const xff = req.headers.get("x-forwarded-for");
+  let raw: string | null = null;
   if (xff) {
-    const first = xff.split(",")[0]?.trim();
-    if (first) return first;
+    raw = xff.split(",")[0]?.trim() ?? null;
   }
-  return (
-    req.headers.get("x-real-ip") ??
-    req.headers.get("cf-connecting-ip") ??
-    null
-  );
+  if (!raw) {
+    raw =
+      req.headers.get("x-real-ip") ??
+      req.headers.get("cf-connecting-ip") ??
+      null;
+  }
+  return sanitizeIp(raw);
+}
+
+/**
+ * Make a header-supplied IP safe to write into a Postgres `inet` column.
+ * Returns null instead of throwing so a malformed header never blocks a real
+ * quiz completion.
+ */
+export function sanitizeIp(raw: string | null): string | null {
+  if (!raw) return null;
+  let v = raw.trim();
+  if (!v) return null;
+
+  // IPv6 in brackets — strip them. `[::1]:8080` -> `::1`.
+  if (v.startsWith("[")) {
+    const end = v.indexOf("]");
+    if (end > 0) v = v.slice(1, end);
+  }
+
+  // IPv4 with a port. `1.2.3.4:5678` -> `1.2.3.4`.
+  // IPv6 also uses colons so don't strip those.
+  if (v.split(".").length === 4 && v.includes(":")) {
+    v = v.split(":")[0];
+  }
+
+  const isV4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(v);
+  const isV6 = /^[0-9a-f:]+$/i.test(v) && v.includes(":");
+
+  if (!isV4 && !isV6) return null;
+
+  // Final bound check on IPv4 octets.
+  if (isV4) {
+    const octets = v.split(".").map((n) => Number(n));
+    if (octets.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+  }
+
+  return v;
 }
