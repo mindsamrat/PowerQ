@@ -142,7 +142,7 @@ function PaidPage() {
               Something went wrong
             </p>
             <h1 className="font-[family-name:var(--font-heading)] text-3xl font-bold text-text-primary mb-4">
-              We couldn't confirm your payment.
+              We couldn&apos;t confirm your payment.
             </h1>
             <p className="text-text-muted/60 text-sm mb-8 font-[family-name:var(--font-body)] leading-relaxed">
               {state.message}

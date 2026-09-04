@@ -120,7 +120,7 @@ export default function QuizPage() {
         router.push(`/results?${qs.toString()}`);
       }
     },
-    [cursor, plan.length, router]
+    [cursor, plan, router]
   );
 
   const handleChoice = useCallback(
@@ -467,4 +467,3 @@ function FreeTextStep({
     </>
   );
 }
-
