@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "audit:scoring": "tsx --tsconfig tsconfig.json scripts/scoring-audit.ts",
+    "smoke:pdf": "tsx --tsconfig tsconfig.json scripts/pdf-smoke.ts"
   },
   "dependencies": {
     "@fontsource/eb-garamond": "^5.2.7",
@@ -36,6 +38,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }

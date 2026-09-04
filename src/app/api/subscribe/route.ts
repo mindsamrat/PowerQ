@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { validateEmail } from "@/lib/email-validation";
 import { recordSubscriber } from "@/lib/subscriber-store";
 import { saveResponseToSupabase } from "@/lib/supabase-server";
-import { calculateAxisScores, matchArchetype, computePQ, type AnswerDelta } from "@/lib/scoring";
+import { calculateAxisScores, matchArchetype, computePQ, type ScoredAnswer } from "@/lib/scoring";
 import { questions } from "@/data/questions";
 import { checkResponsesPerIp, getClientIp } from "@/lib/rate-limit";
 
@@ -64,28 +64,32 @@ function sanitizeFreeText(raw: string | undefined): string {
  * outcome.
  */
 function recomputeFromAnswers(answers: AnswerEntry[]) {
-  const deltas: AnswerDelta[] = [];
-  let validCount = 0;
+  const scored: ScoredAnswer[] = [];
+  const seen = new Set<string>();
 
   for (const a of answers) {
     if (!a?.q || !a?.o) continue;
+    if (seen.has(a.q)) continue; // one answer per question — ignore duplicates
     const q = questions.find((qq) => qq.id === a.q);
     if (!q || q.kind === "free-text" || q.kind === "email") continue;
     const option = q.options.find((o) => o.id === a.o);
     if (!option) continue;
-    deltas.push({
-      control: option.scores.control ?? 0,
-      visibility: option.scores.visibility ?? 0,
-      timeHorizon: option.scores.timeHorizon ?? 0,
-      powerSource: option.scores.powerSource ?? 0,
+    seen.add(a.q);
+    scored.push({
+      questionId: q.id,
+      delta: {
+        control: option.scores.control ?? 0,
+        visibility: option.scores.visibility ?? 0,
+        timeHorizon: option.scores.timeHorizon ?? 0,
+        powerSource: option.scores.powerSource ?? 0,
+      },
     });
-    validCount += 1;
   }
 
-  const scores = calculateAxisScores(deltas);
+  const scores = calculateAxisScores(scored);
   const match = matchArchetype(scores);
-  const pq = computePQ(scores);
-  return { scores, match, pq, validCount };
+  const pq = computePQ(scores, scored);
+  return { scores, match, pq, validCount: scored.length };
 }
 
 export async function POST(req: Request) {

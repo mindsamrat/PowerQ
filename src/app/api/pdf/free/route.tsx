@@ -161,7 +161,7 @@ export async function GET(req: Request) {
         <Text style={styles.label}>Next</Text>
         <Text style={styles.heading}>The Full Report</Text>
         <Text style={styles.body}>
-          The paid PQ Report is 24 pages of personalized analysis: how {archetype.name} operates in love,
+          The paid PQ Report is 25 pages of personalized analysis: how {archetype.name} operates in love,
           money, work, conflict, and legacy. Seven laws specific to your archetype. Three failure modes
           and the early warning signs of each. Your Hidden Edge — the quality most people underestimate
           about you, reframed as leverage.

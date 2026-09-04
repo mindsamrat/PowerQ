@@ -1,5 +1,5 @@
 import { questions, type Question, type ChoiceQuestion, type FreeTextQuestion, type EmailQuestion, type OptionId } from "@/data/questions";
-import { calculateAxisScores, matchArchetype, computePQ, type AnswerDelta, type AxisScores, type MatchResult } from "@/lib/scoring";
+import { calculateAxisScores, matchArchetype, computePQ, type AnswerDelta, type AxisScores, type MatchResult, type ScoredAnswer } from "@/lib/scoring";
 
 export interface ChoiceAnswer {
   questionId: string;
@@ -40,8 +40,10 @@ export function buildQuizPlan(_seed?: string): Question[] {
   return [...calibration, ...branched, ...tiebreakers, ...freeText, ...email];
 }
 
-/** Minimum runner-up gap required to skip the tiebreaker block. */
-const TIEBREAKER_SKIP_GAP = 8;
+/** Minimum runner-up fit gap (match-strength points) required to skip the tiebreaker block. */
+const TIEBREAKER_SKIP_GAP = 14;
+/** …and the interim signature must already be reasonably well-defined. */
+const TIEBREAKER_SKIP_PQ = 48;
 
 /**
  * How many further steps (questions actually served) lie ahead, given the
@@ -88,12 +90,12 @@ export function nextServableCursor(
     // Only evaluate the skip rule once we actually have data to evaluate on.
     if (progress.choiceAnswers.length < 10) return i;
 
-    const deltas = progress.choiceAnswers.map((a) => a.delta);
-    const interim = calculateAxisScores(deltas);
+    const scored = toScored(progress.choiceAnswers);
+    const interim = calculateAxisScores(scored);
     const match = matchArchetype(interim);
-    const gap = match.runnerUpDistance - match.distance;
+    const interimPq = computePQ(interim, scored);
 
-    if (gap >= TIEBREAKER_SKIP_GAP) {
+    if (match.gap >= TIEBREAKER_SKIP_GAP && interimPq >= TIEBREAKER_SKIP_PQ) {
       // Confidently matched — skip every contiguous tiebreaker that follows.
       i += 1;
       continue;
@@ -125,10 +127,14 @@ export interface FinalResult {
   freeText: FreeTextAnswer[];
 }
 
+function toScored(answers: ChoiceAnswer[]): ScoredAnswer[] {
+  return answers.map((a) => ({ questionId: a.questionId, delta: a.delta }));
+}
+
 export function finalize(progress: QuizProgress): FinalResult {
-  const deltas = progress.choiceAnswers.map((a) => a.delta);
-  const scores = calculateAxisScores(deltas);
+  const scored = toScored(progress.choiceAnswers);
+  const scores = calculateAxisScores(scored);
   const match = matchArchetype(scores);
-  const pq = computePQ(scores);
+  const pq = computePQ(scores, scored);
   return { match, scores, pq, freeText: progress.freeTextAnswers };
 }

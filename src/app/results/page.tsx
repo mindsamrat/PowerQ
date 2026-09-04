@@ -15,7 +15,7 @@ import {
   type AxisId,
 } from "@/data/archetypes";
 import { computeSignatureAnswers, type SignatureAnswer, type StoredAnswer } from "@/lib/signature-answers";
-import { matchArchetype, type AxisScores } from "@/lib/scoring";
+import { matchArchetype, type AxisScores, type MatchResult } from "@/lib/scoring";
 import {
   archetypeBlend,
   deriveReadings,
@@ -68,7 +68,7 @@ function ResultsPage() {
 
   const match = useMemo(() => matchArchetype(scores), [scores]);
   const blend = useMemo(() => archetypeBlend(scores), [scores]);
-  const confidence = useMemo(() => readConfidence(match), [match]);
+  const confidence = useMemo(() => readConfidence(match, pq), [match, pq]);
   const readings = useMemo(() => deriveReadings(scores), [scores]);
 
   const cardUrl = useMemo(() => {
@@ -108,7 +108,7 @@ function ResultsPage() {
       <div className="relative z-10 max-w-lg mx-auto px-6 pb-24">
         <RevealSection archetype={archetype} pq={pq} />
         <Divider />
-        <ConfidenceSection confidence={confidence} accent={archetype.cardAccent} />
+        <ConfidenceSection confidence={confidence} match={match} accent={archetype.cardAccent} />
         <Divider />
         <BlendSection blend={blend} accent={archetype.cardAccent} />
         <Divider />
@@ -186,6 +186,9 @@ function RevealSection({ archetype, pq }: { archetype: Archetype; pq: number }) 
           {displayed}
         </p>
         <p className="text-text-muted/30 text-xs font-[family-name:var(--font-body)] mt-1">out of 100</p>
+        <p className="text-text-muted/40 text-[11px] italic font-[family-name:var(--font-body)] mt-3 max-w-xs mx-auto leading-relaxed">
+          How sharply defined your power signature is — not how much power you have. Every archetype can score high.
+        </p>
       </div>
     </section>
   );
@@ -277,9 +280,11 @@ function EnemySection({ archetype, enemy }: { archetype: Archetype; enemy: Arche
 
 function ConfidenceSection({
   confidence,
+  match,
   accent,
 }: {
   confidence: ConfidenceReading;
+  match: MatchResult;
   accent: string;
 }) {
   const dot =
@@ -305,6 +310,9 @@ function ConfidenceSection({
       </div>
       <p className="text-text-muted/60 text-sm md:text-[15px] font-[family-name:var(--font-body)] mt-5 max-w-md mx-auto leading-relaxed">
         {confidence.description}
+      </p>
+      <p className="text-text-muted/35 text-[11px] font-[family-name:var(--font-body)] mt-3 tracking-wide">
+        Fit {match.fit}% · runner-up {match.runnerUp.name} {match.runnerUpFit}% · gap {match.gap} pts
       </p>
     </section>
   );
@@ -770,9 +778,10 @@ function PaidUnlockCard({ archetype }: { archetype: Archetype }) {
           Unlock your full analysis.
         </h3>
         <p className="text-text-muted/50 text-sm mb-8 font-[family-name:var(--font-body)] max-w-sm mx-auto">
-          A 19-page personalized report: {archetype.name} across love, money,
-          leadership, enemies, and legacy. Quotes your actual answers. Watermarked
-          to your email.
+          A 25-page personalized report: {archetype.name} across love, money,
+          leadership, enemies, and legacy. Quotes your actual answers, shows
+          the numbers behind every score, and uses the same structure for
+          everyone so you can compare with friends. Watermarked to your email.
         </p>
         <button
           onClick={startCheckout}

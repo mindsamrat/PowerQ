@@ -5,42 +5,48 @@ import type { StoredAnswer } from "@/lib/signature-answers";
 
 // ---------- Archetype blend ----------
 //
-// Convert 4D distances into a softmax-ish percentage so users see they aren't
-// a "pure" type — the typical pattern is 60/25/10/5 across the top archetypes.
+// Convert per-archetype fit (direction match, 0–100 — the same number the
+// classifier uses) into a softmax percentage so users see they aren't a
+// "pure" type. The typical pattern is 60/25/10/5 across the top archetypes.
+// Using fit rather than raw distance keeps the blend consistent with the
+// verdict: the archetype with the best fit is always the largest slice.
 
-const BLEND_TEMP = 18; // lower = more concentrated on top archetype
+const BLEND_TEMP = 20; // lower = more concentrated on top archetype
 
 export interface BlendEntry {
   id: string;
   name: string;
   percent: number;
+  /** Direction-match strength for this archetype, 0–100. */
+  fit: number;
+}
+
+export function archetypeFits(scores: AxisScores): { archetype: Archetype; fit: number }[] {
+  const axes: AxisId[] = ["control", "visibility", "timeHorizon", "powerSource"];
+  const v = axes.map((ax) => scores[ax] - 50);
+  const vNorm = Math.hypot(...v);
+  return archetypes.map((a) => {
+    const c = getCentroid(a);
+    const dir = axes.map((ax) => c[ax] - 50);
+    const dNorm = Math.hypot(...dir) || 1;
+    const cos = vNorm < 1e-6 ? 0 : v.reduce((s, x, i) => s + x * dir[i], 0) / (vNorm * dNorm);
+    return { archetype: a, fit: Math.round(100 * cos) };
+  });
 }
 
 export function archetypeBlend(scores: AxisScores): BlendEntry[] {
-  const distances = archetypes.map((a) => {
-    const c = getCentroid(a);
-    const d = Math.hypot(
-      scores.control - c.control,
-      scores.visibility - c.visibility,
-      scores.timeHorizon - c.timeHorizon,
-      scores.powerSource - c.powerSource
-    );
-    return { archetype: a, distance: d };
-  });
-
-  const expWeights = distances.map((x) => Math.exp(-x.distance / BLEND_TEMP));
+  const fits = archetypeFits(scores);
+  const expWeights = fits.map((x) => Math.exp((x.fit - 100) / BLEND_TEMP));
   const total = expWeights.reduce((s, x) => s + x, 0) || 1;
 
-  const blend = distances
+  return fits
     .map((x, i) => ({
       id: x.archetype.id,
       name: x.archetype.name,
-      raw: (expWeights[i] / total) * 100,
+      fit: x.fit,
+      percent: Math.round((expWeights[i] / total) * 100),
     }))
-    .sort((a, b) => b.raw - a.raw);
-
-  // Round but ensure top entry stays leading after rounding.
-  return blend.map((x) => ({ id: x.id, name: x.name, percent: Math.round(x.raw) }));
+    .sort((a, b) => b.percent - a.percent || b.fit - a.fit);
 }
 
 // ---------- Match confidence ----------
@@ -51,13 +57,29 @@ export interface ConfidenceReading {
   level: ConfidenceLevel;
   label: string;
   description: string;
-  /** Distance gap to the runner-up. Larger = more confident. */
+  /** Fit gap to the runner-up, in match-strength points. Larger = more confident. */
   gap: number;
 }
 
-export function readConfidence(match: MatchResult): ConfidenceReading {
-  const gap = match.runnerUpDistance - match.distance;
-  if (gap >= 18) {
+/**
+ * Confidence combines two things:
+ *   • gap  — how far ahead the winning archetype is over the runner-up
+ *            (match-strength points).
+ *   • pq   — how sharply defined the signature is (extremity + answer
+ *            consistency). A near-neutral or self-contradicting respondent can
+ *            still have a big gap by accident; requiring a minimum PQ stops
+ *            random clicking from reading as a "strong match".
+ * Thresholds calibrated by simulation: random answering lands ~80% borderline,
+ * 70%-consistent respondents land mostly "clear" or "strong".
+ */
+export const CONFIDENCE_HIGH_GAP = 14;
+export const CONFIDENCE_HIGH_PQ = 48;
+export const CONFIDENCE_MODERATE_GAP = 7;
+export const CONFIDENCE_MODERATE_PQ = 40;
+
+export function readConfidence(match: MatchResult, pq: number): ConfidenceReading {
+  const gap = match.gap;
+  if (gap >= CONFIDENCE_HIGH_GAP && pq >= CONFIDENCE_HIGH_PQ) {
     return {
       level: "high",
       label: "Strong match",
@@ -65,7 +87,7 @@ export function readConfidence(match: MatchResult): ConfidenceReading {
       gap,
     };
   }
-  if (gap >= 9) {
+  if (gap >= CONFIDENCE_MODERATE_GAP && pq >= CONFIDENCE_MODERATE_PQ) {
     return {
       level: "moderate",
       label: "Clear match",

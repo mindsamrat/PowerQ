@@ -1,0 +1,1093 @@
+import { renderToStream, Document, Page, Text, View, StyleSheet, Font, Svg, Path, Polygon, Circle, Line, G } from "@react-pdf/renderer";
+import { join } from "node:path";
+import React from "react";
+import {
+  archetypes,
+  axisLabels,
+  axisNarratives,
+  bandFor,
+  getArchetypeById,
+  getEnemy,
+  getRarityRank,
+  type AxisId,
+} from "@/data/archetypes";
+import { perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves } from "@/lib/result-analysis";
+import { matchArchetype, pqBreakdown, type ScoredAnswer } from "@/lib/scoring";
+import { questions, choiceQuestions } from "@/data/questions";
+
+let fontsRegistered = false;
+function registerFonts() {
+  if (fontsRegistered) return;
+  const fontDir = join(process.cwd(), "node_modules/@fontsource");
+  Font.register({
+    family: "Playfair",
+    fonts: [
+      { src: join(fontDir, "playfair-display/files/playfair-display-latin-700-normal.woff"), fontWeight: 700 },
+      { src: join(fontDir, "playfair-display/files/playfair-display-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
+    ],
+  });
+  Font.register({
+    family: "Garamond",
+    fonts: [
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-400-normal.woff"), fontWeight: 400 },
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-600-normal.woff"), fontWeight: 600 },
+      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-700-normal.woff"), fontWeight: 700 },
+    ],
+  });
+  Font.register({
+    family: "DM Sans",
+    fonts: [
+      { src: join(fontDir, "dm-sans/files/dm-sans-latin-400-normal.woff"), fontWeight: 400 },
+      { src: join(fontDir, "dm-sans/files/dm-sans-latin-700-normal.woff"), fontWeight: 700 },
+      { src: join(fontDir, "dm-sans/files/dm-sans-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
+    ],
+  });
+  fontsRegistered = true;
+}
+
+const GOLD = "#8B7355";
+const GOLD_LIGHT = "#B8A870";
+const INK = "#0A0A0A";
+const SUB = "#3A3A3A";
+const FAINT = "#888";
+const CRIMSON = "#9F1024";
+const CRIMSON_DEEP = "#7A0C1B";
+const PAPER = "#FAF6EE";
+const PAPER_DARK = "#F1EAD8";
+
+// Per-axis colour codes for visual differentiation across the report
+const AXIS_COLOR: Record<AxisId, string> = {
+  control: "#8B5A3C",      // umber - earth, command
+  visibility: "#C9A54C",    // gold - sun, visibility
+  timeHorizon: "#3F5F7E",   // slate blue - depth, patience
+  powerSource: "#9F1024",   // crimson - force, magnetism
+};
+
+const s = StyleSheet.create({
+  page: { paddingTop: 64, paddingBottom: 56, paddingHorizontal: 56, fontFamily: "Garamond", fontSize: 11, color: INK, backgroundColor: "#FFFFFF" },
+  // Crimson accent bar at the top of every page; logo + brand line
+  pageHeaderBar: { position: "absolute", top: 0, left: 0, right: 0, height: 4, backgroundColor: CRIMSON },
+  pageHeader: { position: "absolute", top: 18, left: 56, right: 56, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  pageHeaderBrand: { fontFamily: "Playfair", fontWeight: 700, fontSize: 9, letterSpacing: 4, color: CRIMSON, textTransform: "uppercase" },
+  pageHeaderMeta: { fontFamily: "DM Sans", fontSize: 8, letterSpacing: 1.5, color: FAINT, textTransform: "uppercase" },
+  label: { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: GOLD, fontWeight: 700 },
+  pageTitle: { fontFamily: "Playfair", fontWeight: 700, fontSize: 26, marginTop: 6, marginBottom: 14, color: INK, lineHeight: 1.1 },
+  sectionHeading: { fontFamily: "Playfair", fontWeight: 700, fontSize: 14, marginTop: 14, marginBottom: 6, color: INK },
+  body: { fontSize: 11, lineHeight: 1.65, color: SUB, marginBottom: 8 },
+  bodyEmphasis: { fontSize: 12, lineHeight: 1.65, color: INK, marginBottom: 10, fontStyle: "italic" },
+  caption: { fontSize: 10, lineHeight: 1.5, color: SUB, fontStyle: "italic" },
+  divider: { height: 1, backgroundColor: "#E0D9C8", marginVertical: 12 },
+  watermark: { position: "absolute", bottom: 22, left: 56, right: 120, fontSize: 7, letterSpacing: 1.5, textTransform: "uppercase", color: FAINT },
+  pageNum: { position: "absolute", bottom: 22, right: 56, fontSize: 8, color: FAINT, fontFamily: "DM Sans" },
+
+  // Cover
+  coverFrame: { flex: 1, justifyContent: "center", alignItems: "center", padding: 36 },
+  coverLabel: { fontSize: 10, letterSpacing: 6, textTransform: "uppercase", color: GOLD, marginBottom: 22 },
+  coverGreeting: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 18, color: SUB, marginBottom: 20, textAlign: "center" },
+  coverArchetype: { fontFamily: "Playfair", fontWeight: 700, fontSize: 56, color: INK, textAlign: "center", letterSpacing: 1 },
+  coverTagline: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 16, color: SUB, marginTop: 12, textAlign: "center" },
+  coverDivider: { width: 50, height: 1, backgroundColor: GOLD, marginVertical: 22 },
+  coverMeta: { fontSize: 9, color: SUB, lineHeight: 1.7, textAlign: "center" },
+  totemBlock: { marginTop: 18, alignItems: "center" },
+  totemLabel: { fontSize: 8.5, letterSpacing: 3, textTransform: "uppercase", color: GOLD, marginBottom: 4 },
+  totemAnimal: { fontFamily: "Playfair", fontWeight: 700, fontSize: 22, color: INK },
+  totemMeaning: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 11, color: SUB, marginTop: 4, textAlign: "center", maxWidth: 360, lineHeight: 1.4 },
+
+  // Axis chart
+  axisRow: { marginBottom: 8 },
+  axisHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 4 },
+  axisName: { fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: SUB, fontWeight: 700 },
+  axisValue: { fontFamily: "Playfair", fontWeight: 700, fontSize: 14, color: INK },
+  bar: { height: 2, backgroundColor: "#E0D9C8", marginBottom: 4 },
+
+  // Cards
+  card: { backgroundColor: PAPER, padding: 12, marginVertical: 6, borderLeft: `2px solid ${GOLD}` },
+  cardLabel: { fontSize: 8, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, marginBottom: 4 },
+  cardPrompt: { fontSize: 9.5, fontStyle: "italic", color: SUB, marginBottom: 4 },
+  cardQuote: { fontSize: 11, color: INK, lineHeight: 1.5 },
+  cardImpact: { fontSize: 8.5, color: SUB, marginTop: 4 },
+
+  // Bullets
+  bullet: { flexDirection: "row", marginBottom: 6 },
+  bulletDot: { width: 14, fontSize: 11, color: GOLD },
+  bulletBody: { flex: 1, fontSize: 10.5, lineHeight: 1.65, color: SUB },
+
+  // Laws
+  lawRow: { flexDirection: "row", marginBottom: 9, paddingBottom: 9, borderBottom: "1px solid #EEE" },
+  lawNum: { fontFamily: "Playfair", fontWeight: 700, fontSize: 16, color: GOLD, width: 28 },
+  lawText: { flex: 1, fontSize: 11, lineHeight: 1.5, color: INK, paddingTop: 1 },
+
+  // Blend
+  blendRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 3, fontSize: 10, color: SUB },
+  blendBar: { height: 1.5, backgroundColor: "#E0D9C8", marginBottom: 5 },
+
+  // Comparison
+  compRow: { flexDirection: "row", marginBottom: 6 },
+  compLabel: { width: 100, fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: SUB },
+  compTrack: { flex: 1, height: 14, backgroundColor: PAPER, position: "relative" },
+  compYourBar: { position: "absolute", top: 0, left: 0, height: 14, backgroundColor: GOLD },
+  compAvgMark: { position: "absolute", top: -2, width: 1.5, height: 18, backgroundColor: CRIMSON },
+  compValue: { width: 36, textAlign: "right", fontSize: 10, color: INK, fontFamily: "Playfair", fontWeight: 700 },
+
+  // Roadmap
+  roadmapRow: { marginBottom: 12 },
+  roadmapPhase: { fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 2, fontWeight: 700 },
+  roadmapWeeks: { fontSize: 8.5, color: FAINT, marginBottom: 4 },
+  roadmapFocus: { fontSize: 11, color: INK, lineHeight: 1.55 },
+
+  // Pairings
+  pairCard: { backgroundColor: PAPER, padding: 14, marginVertical: 8 },
+  pairTitle: { fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 },
+  pairArchetype: { fontFamily: "Playfair", fontWeight: 700, fontSize: 18, color: INK, marginBottom: 6 },
+  pairReason: { fontSize: 10.5, color: SUB, lineHeight: 1.6 },
+
+  // Reading rows (strength / warning / practice)
+  readingRow: { flexDirection: "row", marginBottom: 8 },
+  readingLabel: { width: 70, fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700, paddingTop: 1 },
+  readingBody: { flex: 1, fontSize: 10.5, lineHeight: 1.6, color: INK },
+});
+
+// ---------- Reusable visual components ----------
+
+function PageChrome({ docId, watermark }: { docId: string; watermark: string }) {
+  return (
+    <>
+      <View style={s.pageHeaderBar} fixed />
+      <View style={s.pageHeader} fixed>
+        <Text style={s.pageHeaderBrand}>PQ · Power Quotient Assessment</Text>
+        <Text style={s.pageHeaderMeta}>Doc {docId}</Text>
+      </View>
+      <Text style={s.watermark} fixed>{watermark}</Text>
+      <Text style={s.pageNum} render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} fixed />
+    </>
+  );
+}
+
+// Crimson compass-rose used on the cover. Mirrors the favicon design.
+function CompassRose({ size = 96 }: { size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 64 64">
+      <Path d="M32 6 L32 58" stroke={CRIMSON} strokeWidth={0.8} />
+      <Path d="M6 32 L58 32" stroke={CRIMSON} strokeWidth={0.8} />
+      <Path d="M32 7 L34.5 30 L57 32 L34.5 34 L32 57 L29.5 34 L7 32 L29.5 30 Z" fill={CRIMSON} />
+      <Path d="M48.7 15.3 L34.4 29.6 L48.7 48.7 L34.4 34.4 L15.3 48.7 L29.6 34.4 L15.3 15.3 L29.6 29.6 Z" fill={CRIMSON} fillOpacity={0.35} />
+      <Circle cx={32} cy={32} r={3} fill="#FFFFFF" />
+      <Circle cx={32} cy={32} r={1.4} fill={CRIMSON} />
+    </Svg>
+  );
+}
+
+interface RadarPoint { axis: AxisId; value: number; label: string }
+function RadarChart({ scores, size = 220 }: { scores: Record<AxisId, number>; size?: number }) {
+  const center = size / 2;
+  const maxR = size * 0.38;
+  const points: RadarPoint[] = [
+    { axis: "control", value: scores.control, label: "Control" },
+    { axis: "visibility", value: scores.visibility, label: "Visibility" },
+    { axis: "timeHorizon", value: scores.timeHorizon, label: "Time" },
+    { axis: "powerSource", value: scores.powerSource, label: "Power" },
+  ];
+  // Top, Right, Bottom, Left
+  const angles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+
+  const ringValues = [25, 50, 75, 100];
+
+  const userPolygon = points
+    .map((p, i) => {
+      const r = (p.value / 100) * maxR;
+      const x = center + r * Math.cos(angles[i]);
+      const y = center + r * Math.sin(angles[i]);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  // Extra horizontal room so the VISIBILITY / POWER-SOURCE labels aren't clipped.
+  const pad = 70;
+  return (
+    <Svg width={size + pad * 2} height={size} viewBox={`${-pad} 0 ${size + pad * 2} ${size}`}>
+      {/* Concentric rings */}
+      {ringValues.map((v) => (
+        <Circle key={v} cx={center} cy={center} r={(v / 100) * maxR} stroke="#E0D9C8" strokeWidth={0.6} fill="none" />
+      ))}
+      {/* Axis lines */}
+      {angles.map((ang, i) => (
+        <Line
+          key={i}
+          x1={center}
+          y1={center}
+          x2={center + maxR * Math.cos(ang)}
+          y2={center + maxR * Math.sin(ang)}
+          stroke="#E0D9C8"
+          strokeWidth={0.6}
+        />
+      ))}
+      {/* User polygon */}
+      <Polygon points={userPolygon} fill={CRIMSON} fillOpacity={0.18} stroke={CRIMSON} strokeWidth={1.4} />
+      {/* User score dots */}
+      {points.map((p, i) => {
+        const r = (p.value / 100) * maxR;
+        const x = center + r * Math.cos(angles[i]);
+        const y = center + r * Math.sin(angles[i]);
+        return <Circle key={p.axis} cx={x} cy={y} r={2.5} fill={AXIS_COLOR[p.axis]} />;
+      })}
+      {/* Axis labels */}
+      <G>
+        <Text x={center} y={center - maxR - 10} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "middle" }}>CONTROL</Text>
+        <Text x={center + maxR + 14} y={center + 3} style={{ fontSize: 8, fontFamily: "DM Sans" }}>VISIBILITY</Text>
+        <Text x={center} y={center + maxR + 14} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "middle" }}>TIME-HORIZON</Text>
+        <Text x={center - maxR - 14} y={center + 3} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "end" }}>POWER-SOURCE</Text>
+      </G>
+    </Svg>
+  );
+}
+
+function clampScore(n: unknown): number {
+  const v = Number(n);
+  if (Number.isNaN(v)) return 50;
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+function ordinal(n: number): string {
+  const last = n % 100;
+  if (last >= 11 && last <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
+
+function firstName(name: string | null | undefined): string {
+  if (!name) return "Reader";
+  const trimmed = name.trim();
+  if (!trimmed) return "Reader";
+  return trimmed.split(/\s+/)[0];
+}
+
+export interface DbResponse {
+  id: string;
+  name: string | null;
+  email: string;
+  archetype_id: string;
+  pq_score: number;
+  scores: { control: number; visibility: number; timeHorizon: number; powerSource: number };
+  answers: { q: string; o: string; d: { control: number; visibility: number; timeHorizon: number; powerSource: number } }[];
+  free_text: { questionId: string; text: string }[];
+  payment_status: string;
+  paid_at: string | null;
+  created_at: string;
+}
+
+/**
+ * Pure renderer: takes a stored response row and returns the PDF bytes.
+ * Exported so the report can be rendered in tests without Supabase.
+ */
+export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; filename: string }> {
+  registerFonts();
+  const archetype = getArchetypeById(row.archetype_id) ?? archetypes[0];
+  const enemy = getEnemy(archetype);
+  const rank = getRarityRank(archetype);
+  const scores = {
+    control: clampScore(row.scores?.control),
+    visibility: clampScore(row.scores?.visibility),
+    timeHorizon: clampScore(row.scores?.timeHorizon),
+    powerSource: clampScore(row.scores?.powerSource),
+  };
+  const pq = clampScore(row.pq_score);
+  const answers = Array.isArray(row.answers) ? row.answers : [];
+  const freeTextById: Record<string, string> = Object.fromEntries(
+    (Array.isArray(row.free_text) ? row.free_text : []).map((f) => [f.questionId, f.text])
+  );
+  const attribution = perAxisAttribution(answers);
+  const readings = deriveReadings(scores);
+  const blend = archetypeBlend(scores).slice(0, 4);
+  const match = matchArchetype(scores);
+  const confidence = readConfidence(match, pq);
+  const scored: ScoredAnswer[] = answers.map((a) => ({ questionId: a.q, delta: a.d }));
+  const breakdown = pqBreakdown(scores, scored);
+  const answeredById = new Map(answers.map((a) => [a.q, a]));
+  const ampArch = getArchetypeById(archetype.pairings.amplifies.id);
+  const drainArch = getArchetypeById(archetype.pairings.drains.id);
+  const levelUp = levelUpMoves(scores);
+  const docId = row.id.slice(0, 8).toUpperCase();
+  const dateStr = new Date(row.paid_at ?? row.created_at).toISOString().slice(0, 10);
+  const watermark = `${row.email} · ${docId} · ${dateStr}`;
+  const personalName = firstName(row.name);
+
+  const axesOrdered: AxisId[] = ["control", "visibility", "timeHorizon", "powerSource"];
+
+  const doc = (
+    <Document author="Way of Gods" title={`PQ Full Report - ${archetype.name}`}>
+      {/* 1. COVER */}
+      <Page size="LETTER" style={s.page}>
+        <View style={s.coverFrame}>
+          <View style={{ marginBottom: 18 }}>
+            <CompassRose size={84} />
+          </View>
+          <Text style={s.coverLabel}>The PQ Power Profile</Text>
+          <Text style={s.coverGreeting}>Prepared for {personalName}</Text>
+          <Text style={s.coverArchetype}>{archetype.name}</Text>
+          <Text style={s.coverTagline}>{archetype.tagline}</Text>
+          <View style={s.coverDivider} />
+          <Text style={s.coverMeta}>
+            PQ {pq} of 100 · Fit {match.fit}% · {archetype.rarity}% rarity · {ordinal(rank)} rarest of 8 archetypes{"\n"}
+            Confidence: {confidence.label} · Document {docId} · {dateStr}
+          </Text>
+          <View style={s.totemBlock}>
+            <Text style={s.totemLabel}>Your totem</Text>
+            <Text style={s.totemAnimal}>{archetype.totem.animal}</Text>
+            <Text style={s.totemMeaning}>{archetype.totem.meaning}</Text>
+          </View>
+        </View>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 0. STANDARD PROFILE SHEET — identical layout for every respondent so reports can be compared side by side */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Standard Profile Sheet</Text>
+        <Text style={s.pageTitle}>Your numbers, in the same format as everyone else&apos;s.</Text>
+        <Text style={s.body}>
+          Every PQ report carries this sheet with the same 24 variables in the same order. Put two reports side by side and the differences are the differences between the people — not between the documents.
+        </Text>
+        {(() => {
+          const band = (v: number) => bandFor(v).toUpperCase();
+          const rows: { k: string; v: string; note?: string }[] = [
+            { k: "Archetype", v: archetype.name, note: "Best direction match" },
+            { k: "Fit", v: `${match.fit} / 100`, note: "How closely your pattern matches the archetype" },
+            { k: "Runner-up", v: match.runnerUp.name, note: "Second-best direction match" },
+            { k: "Runner-up fit", v: `${match.runnerUpFit} / 100` },
+            { k: "Gap", v: `${match.gap} pts`, note: "Fit minus runner-up fit" },
+            { k: "Confidence", v: confidence.label, note: "Strong ≥14 pts & PQ ≥48 · Clear ≥7 pts & PQ ≥40 · else Borderline" },
+            { k: "PQ (Signature Definition)", v: `${pq} / 100`, note: "0.5 × Extremity + 0.5 × Consistency" },
+            { k: "Extremity", v: `${breakdown.extremity} / 100`, note: "Mean distance of the four axes from neutral" },
+            { k: "Consistency", v: `${breakdown.consistency} / 100`, note: "% of answers pointing toward your archetype" },
+            { k: "Control", v: `${scores.control} · ${band(scores.control)}` },
+            { k: "Visibility", v: `${scores.visibility} · ${band(scores.visibility)}` },
+            { k: "Time-Horizon", v: `${scores.timeHorizon} · ${band(scores.timeHorizon)}` },
+            { k: "Power-Source", v: `${scores.powerSource} · ${band(scores.powerSource)}` },
+            { k: "Blend #1", v: `${blend[0]?.name ?? "—"} · ${blend[0]?.percent ?? 0}%` },
+            { k: "Blend #2", v: `${blend[1]?.name ?? "—"} · ${blend[1]?.percent ?? 0}%` },
+            { k: "Blend #3", v: `${blend[2]?.name ?? "—"} · ${blend[2]?.percent ?? 0}%` },
+            { k: "Blend #4", v: `${blend[3]?.name ?? "—"} · ${blend[3]?.percent ?? 0}%` },
+            { k: "Natural enemy", v: enemy.name },
+            { k: "Amplified by", v: ampArch?.name ?? archetype.pairings.amplifies.id },
+            { k: "Drained by", v: drainArch?.name ?? archetype.pairings.drains.id },
+            { k: "Rarity (seeded)", v: `${archetype.rarity}% · ${ordinal(rank)} rarest of 8` },
+            { k: "Questions scored", v: `${breakdown.answered} of ${choiceQuestions.length}`, note: breakdown.answered < choiceQuestions.length ? "Tiebreakers skipped: match was already clear" : "Full bank, including tiebreakers" },
+            { k: "Free-text prompts answered", v: `${["q24", "q25"].filter((id) => !!freeTextById[id]).length} of 2` },
+            { k: "Document", v: `${docId} · ${dateStr}` },
+          ];
+          return (
+            <View style={{ marginTop: 6 }}>
+              <View style={{ flexDirection: "row", paddingBottom: 4, borderBottom: `1px solid ${GOLD}` }}>
+                <Text style={{ width: "34%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Variable</Text>
+                <Text style={{ width: "30%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Value</Text>
+                <Text style={{ width: "36%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Definition</Text>
+              </View>
+              {rows.map((r, i) => (
+                <View key={r.k} style={{ flexDirection: "row", paddingVertical: 3.5, paddingHorizontal: 4, backgroundColor: i % 2 === 0 ? PAPER : "#FFFFFF" }}>
+                  <Text style={{ width: "34%", fontSize: 9, color: INK, fontWeight: 700 }}>{r.k}</Text>
+                  <Text style={{ width: "30%", fontSize: 9, color: CRIMSON_DEEP, fontFamily: "DM Sans", fontWeight: 700 }}>{r.v}</Text>
+                  <Text style={{ width: "36%", fontSize: 7.5, color: SUB, fontStyle: "italic", lineHeight: 1.3 }}>{r.note ?? ""}</Text>
+                </View>
+              ))}
+            </View>
+          );
+        })()}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 1a. EXECUTIVE SUMMARY — TL;DR for skimmers */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Executive Summary</Text>
+        <Text style={s.pageTitle}>The one-page version, {personalName}.</Text>
+
+        {/* Headline numbers */}
+        <View style={{ flexDirection: "row", marginVertical: 10 }}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Archetype</Text>
+            <Text style={{ fontFamily: "Playfair", fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.name.replace(/^The /, "")}</Text>
+            <Text style={{ fontSize: 9, color: SUB, marginTop: 4, fontStyle: "italic" }}>{archetype.tagline}</Text>
+          </View>
+          <View style={{ width: 100, alignItems: "center", borderLeft: `1px solid ${PAPER_DARK}`, paddingLeft: 14 }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>PQ</Text>
+            <Text style={{ fontFamily: "Playfair", fontSize: 36, fontWeight: 700, color: CRIMSON, lineHeight: 1 }}>{pq}</Text>
+            <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>/ 100</Text>
+          </View>
+          <View style={{ width: 100, alignItems: "center", borderLeft: `1px solid ${PAPER_DARK}`, paddingLeft: 14 }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Rarity</Text>
+            <Text style={{ fontFamily: "Playfair", fontSize: 36, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.rarity}%</Text>
+            <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>{ordinal(rank)} rarest</Text>
+          </View>
+        </View>
+
+        {/* Four-axis at-a-glance scorecard */}
+        <Text style={s.sectionHeading}>Your scorecard</Text>
+        <View style={{ marginVertical: 4 }}>
+          {/* Table header */}
+          <View style={{ flexDirection: "row", paddingBottom: 4, borderBottom: `1px solid ${GOLD}` }}>
+            <Text style={{ width: "32%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Axis</Text>
+            <Text style={{ width: "16%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700, textAlign: "right" }}>Score</Text>
+            <Text style={{ width: "18%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700, textAlign: "center" }}>Band</Text>
+            <Text style={{ width: "34%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Reading</Text>
+          </View>
+          {axesOrdered.map((axis, i) => {
+            const value = scores[axis];
+            const band = bandFor(value);
+            return (
+              <View key={axis} style={{ flexDirection: "row", paddingVertical: 5, backgroundColor: i % 2 === 0 ? PAPER : "#FFFFFF", paddingHorizontal: 4, borderLeft: `2px solid ${AXIS_COLOR[axis]}` }}>
+                <Text style={{ width: "32%", fontSize: 10.5, color: INK, fontWeight: 700, paddingTop: 2 }}>{axisLabels[axis]}</Text>
+                <Text style={{ width: "16%", fontFamily: "Playfair", fontSize: 14, fontWeight: 700, color: AXIS_COLOR[axis], textAlign: "right", paddingTop: 1 }}>{value}</Text>
+                <Text style={{ width: "18%", fontSize: 9.5, color: SUB, textAlign: "center", textTransform: "uppercase", letterSpacing: 1, paddingTop: 3 }}>{band}</Text>
+                <Text style={{ width: "34%", fontSize: 9.5, color: SUB, paddingTop: 3, lineHeight: 1.3 }}>
+                  {value >= 67 ? "Pronounced" : value <= 33 ? "Inverted" : "Balanced"}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Three lines: top strength, top risk, one move */}
+        <Text style={s.sectionHeading}>The three sentences worth reading</Text>
+        {(() => {
+          const topAxis = axesOrdered.reduce(
+            (best, ax) => (Math.abs(scores[ax] - 50) > Math.abs(scores[best] - 50) ? ax : best),
+            axesOrdered[0]
+          );
+          const topReading = readings.find((r) => r.axis === topAxis)!;
+          return (
+            <>
+              <View style={s.readingRow}>
+                <Text style={[s.readingLabel, { color: GOLD_LIGHT }]}>Edge</Text>
+                <Text style={s.readingBody}>{topReading.strength}</Text>
+              </View>
+              <View style={s.readingRow}>
+                <Text style={[s.readingLabel, { color: CRIMSON }]}>Risk</Text>
+                <Text style={s.readingBody}>{topReading.warning}</Text>
+              </View>
+              <View style={s.readingRow}>
+                <Text style={[s.readingLabel, { color: GOLD }]}>Move</Text>
+                <Text style={s.readingBody}>{topReading.practice}</Text>
+              </View>
+            </>
+          );
+        })()}
+
+        <Text style={[s.caption, { marginTop: 12 }]}>
+          The pages that follow walk through the methodology, every axis in depth, the answers that produced each score, a 90-day plan, and a personalised close. If you stop reading here, the three lines above are the report in miniature.
+        </Text>
+
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 1b. TABLE OF CONTENTS */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Contents</Text>
+        <Text style={s.pageTitle}>What is in this report.</Text>
+        <View style={{ marginTop: 6 }}>
+          {[
+            { n: "—", title: "Standard Profile Sheet", sub: "24 fixed variables, identical layout in every report, for side-by-side comparison" },
+            { n: "—", title: "Executive Summary", sub: "The one-page version: scorecard, top edge, top risk, one move" },
+            { n: "I", title: "Methodology", sub: "How the assessment scores you" },
+            { n: "II", title: "The Verdict", sub: "Your archetype, named and explained" },
+            { n: "III", title: "Power Signature", sub: "4 axes, your radar, your blend" },
+            { n: "IV", title: "Per-Axis Deep Dives", sub: "One page per axis: framework, your top answers, strength / warning / practice" },
+            { n: "V", title: "The Archetype", sub: "History, totem, named historical figures" },
+            { n: "VI", title: "How You Compare", sub: "Your scores vs midpoint, vs centroid, vs runner-up" },
+            { n: "VII", title: "How You Win", sub: "Three contexts your archetype dominates" },
+            { n: "VIII", title: "How You Lose", sub: "The historical failure modes" },
+            { n: "IX", title: "Power Pairings", sub: "Who amplifies you, who drains you" },
+            { n: "X", title: "90-Day Roadmap", sub: "A tailored 3-phase plan" },
+            { n: "XI", title: "The Seven Laws", sub: "Imperatives specific to your archetype" },
+            { n: "XII", title: "Per-Question Analysis", sub: "Every choice you made and what it probed" },
+            { n: "XIII", title: "Hidden Edge & Closing", sub: "Your free-text in our analysis, plus a personal close" },
+            { n: "XIV", title: "Appendix", sub: "Glossary, frameworks, methodology footnotes" },
+          ].map((row, i) => (
+            <View key={i} style={{ flexDirection: "row", marginBottom: 9, paddingBottom: 9, borderBottom: "0.5px solid #EEE" }}>
+              <Text style={{ fontFamily: "Playfair", fontWeight: 700, fontSize: 13, color: CRIMSON, width: 32 }}>{row.n}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontFamily: "Playfair", fontSize: 13, color: INK, fontWeight: 700 }}>{row.title}</Text>
+                <Text style={{ fontSize: 10, color: SUB, fontStyle: "italic", marginTop: 1 }}>{row.sub}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 1c. METHODOLOGY */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>I · Methodology</Text>
+        <Text style={s.pageTitle}>How this report was built.</Text>
+        <Text style={s.body}>
+          The Power Quotient (PQ) Assessment is a 27-question proprietary diagnostic that maps respondents across four orthogonal axes of behavioural power. It is not a Big Five derivative. It synthesises multiple research traditions specifically calibrated to predict how an individual exerts and conserves power across professional and intimate contexts.
+        </Text>
+
+        <Text style={s.sectionHeading}>The four axes</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 8 }}>
+          {axesOrdered.map((axis) => (
+            <View key={axis} style={{ width: "50%", paddingRight: 8, marginBottom: 10 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 3 }}>
+                <View style={{ width: 4, height: 12, backgroundColor: AXIS_COLOR[axis], marginRight: 6 }} />
+                <Text style={{ fontFamily: "Playfair", fontSize: 12, fontWeight: 700, color: INK }}>{axisLabels[axis]}</Text>
+              </View>
+              <Text style={{ fontSize: 9.5, color: SUB, lineHeight: 1.5 }}>
+                {axis === "control" && "Direct command vs sideways influence. Probes how willing you are to issue explicit orders versus shape outcomes through structure or charm."}
+                {axis === "visibility" && "Public vs invisible authority. Probes whether you want power seen and credited, or whether you accumulate leverage through anonymity."}
+                {axis === "timeHorizon" && "Tactical-now vs strategic-later. Probes how heavily you discount future outcomes against immediate ones."}
+                {axis === "powerSource" && "Force vs magnetism. Probes whether your influence is consequence-based (people calculate the cost of crossing you) or attraction-based (people move toward you)."}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        <Text style={s.sectionHeading}>Scoring formula</Text>
+        <Text style={s.body}>
+          <Text style={{ fontWeight: 700 }}>1. Axis scores.</Text> Every option on every choice question carries a delta on each of the four axes. Each question&apos;s four options are compared against each other, so what counts is which option you chose relative to the alternatives. Your axis score is the sum of your choices mapped onto a 5–95 scale: 5 means you took the lowest option on every question, 95 the highest, 50 the middle. This range-normalisation guarantees the same score means the same thing for every respondent, and that no axis drifts upward simply because most options happened to be positive.
+        </Text>
+        <Text style={s.body}>
+          <Text style={{ fontWeight: 700 }}>2. Archetype.</Text> Picture your four scores as an arrow pointing away from neutral (50/50/50/50). Each archetype is also an arrow. Your archetype is the one whose arrow points most nearly the same way as yours; the closeness of direction is reported as <Text style={{ fontStyle: "italic" }}>Fit</Text> (0–100). The runner-up is the second-best direction. <Text style={{ fontStyle: "italic" }}>Gap</Text> is the difference between the two fits.
+        </Text>
+        <Text style={s.body}>
+          <Text style={{ fontWeight: 700 }}>3. PQ — Signature Definition.</Text> This is not a measure of how much power you have; every archetype is a valid form of power. It measures how sharply defined your signature is: half from <Text style={{ fontStyle: "italic" }}>Extremity</Text> (how far your four axes sit from neutral) and half from <Text style={{ fontStyle: "italic" }}>Consistency</Text> (the share of your answers that pointed toward your final archetype). Random or contradictory answering scores in the 20s–30s; a clear, consistent pattern scores 60–85.
+        </Text>
+        <Text style={s.body}>
+          <Text style={{ fontWeight: 700 }}>4. Confidence.</Text> Strong match needs a gap of 14+ points and PQ of 48+. Clear match needs a gap of 7+ and PQ of 40+. Anything less is Borderline, and the report says so rather than pretending.
+        </Text>
+
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 2. THE VERDICT — validating opener */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>The Verdict</Text>
+        <Text style={s.pageTitle}>{personalName}, here is what your answers actually said.</Text>
+        <Text style={s.bodyEmphasis}>
+          You scored {pq} on the Power Quotient. That places you in {archetype.name} territory with {confidence.label.toLowerCase()} confidence —
+          {confidence.gap >= 18 ? " the next-closest archetype isn't close." : ` with a measurable lean toward ${match.runnerUp.name}.`} Only {archetype.rarity}% of respondents read this way.
+        </Text>
+        <Text style={s.body}>
+          {personalName}, this is not a horoscope. It is a 27-question diagnostic processed against four research-grounded axes (Snyder&apos;s self-monitoring, McClelland&apos;s power motive, Strathman&apos;s consideration of future consequences, Higgins&apos; regulatory focus) and matched against eight archetype centroids in 4-dimensional space. Your scores are the literal sum of your choice deltas. Every line in this report cites the exact answer that produced it.
+        </Text>
+        <Text style={s.sectionHeading}>What the engine saw in you</Text>
+        <Text style={s.body}>
+          The pattern that places you in {archetype.name}: {axesOrdered
+            .filter(ax => bandFor(scores[ax]) !== "mid")
+            .map(ax => `${bandFor(scores[ax])} ${axisLabels[ax]} (${scores[ax]})`)
+            .join(", ") || "balanced positioning across all four axes"}.
+          {" "}This combination is what the framework calls {archetype.name}. Your fit to that pattern is {match.fit} out of 100; the runner-up, {match.runnerUp.name}, fits at {match.runnerUpFit} — a gap of {match.gap} points, which the framework reads as {confidence.label.toLowerCase()}.
+        </Text>
+        <Text style={s.sectionHeading}>In your own words</Text>
+        <View style={s.card}>
+          <Text style={s.cardLabel}>Prompt: a time you got what you wanted by doing the opposite of what was expected</Text>
+          {freeTextById.q24 ? (
+            <Text style={s.cardQuote}>&ldquo;{freeTextById.q24}&rdquo;</Text>
+          ) : (
+            <Text style={[s.cardQuote, { color: FAINT, fontStyle: "italic" }]}>Left blank by the respondent.</Text>
+          )}
+        </View>
+        <Text style={s.body}>
+          {freeTextById.q24
+            ? `That moment is the report in miniature. Every ${archetype.name} has a story like this — the move that worked because it broke the pattern others were following.`
+            : `Skipping this prompt is itself a data point: ${archetype.name}s who withhold the story tend to be the ones who have one. The analysis that follows relies on your 27 scored choices alone.`}
+        </Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 3. POWER SIGNATURE */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Your Power Signature</Text>
+        <Text style={s.pageTitle}>Four axes. One pattern. {personalName}.</Text>
+
+        <View style={{ alignItems: "center", marginVertical: 4 }}>
+          <RadarChart scores={scores} size={200} />
+        </View>
+
+        {axesOrdered.map((axis) => {
+          const value = scores[axis];
+          const narrative = axisNarratives[axis][bandFor(value)];
+          return (
+            <View key={axis} style={s.axisRow}>
+              <View style={s.axisHeader}>
+                <Text style={[s.axisName, { color: AXIS_COLOR[axis] }]}>{axisLabels[axis]}</Text>
+                <Text style={s.axisValue}>{value}</Text>
+              </View>
+              <View style={s.bar}>
+                <View style={{ width: `${value}%`, height: 2, backgroundColor: AXIS_COLOR[axis] }} />
+              </View>
+              <Text style={s.caption}>{narrative}</Text>
+            </View>
+          );
+        })}
+
+        <View style={s.divider} />
+        <Text style={s.sectionHeading}>The blend (you are not a pure type)</Text>
+        <Text style={[s.caption, { marginBottom: 6 }]}>
+          Your four closest archetypes, weighted by fit. The secondary types are where your shadow style lives — the moves you make when your dominant pattern fails.
+        </Text>
+        {blend.map((b) => (
+          <View key={b.id}>
+            <View style={s.blendRow}>
+              <Text>{b.name}</Text>
+              <Text>{b.percent}%</Text>
+            </View>
+            <View style={s.blendBar}>
+              <View style={{ width: `${b.percent}%`, height: 1.5, backgroundColor: GOLD }} />
+            </View>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 4 - 7. PER-AXIS DEEP DIVES — one page per axis */}
+      {axesOrdered.map((axis, idx) => {
+        const value = scores[axis];
+        const band = bandFor(value);
+        const narrative = axisNarratives[axis][band];
+        const reading = readings[idx];
+        const top = attribution[axis] ?? [];
+        return (
+          <Page key={axis} size="LETTER" style={s.page}>
+            <Text style={[s.label, { color: AXIS_COLOR[axis] }]}>Axis Deep Dive {idx + 1} of 4</Text>
+            <Text style={s.pageTitle}>{axisLabels[axis]} — your score: {value}</Text>
+            {/* Big axis-coloured score chip */}
+            <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 8 }}>
+              <View style={{ width: 6, height: 38, backgroundColor: AXIS_COLOR[axis], marginRight: 10 }} />
+              <View>
+                <Text style={{ fontFamily: "Playfair", fontSize: 32, fontWeight: 700, lineHeight: 1, color: AXIS_COLOR[axis] }}>{value}</Text>
+                <Text style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, marginTop: 2 }}>{band} band · {axisLabels[axis]}</Text>
+              </View>
+            </View>
+            <Text style={s.bodyEmphasis}>{narrative}</Text>
+
+            <Text style={s.sectionHeading}>What this score means</Text>
+            <Text style={s.body}>
+              You sit in the <Text style={{ fontWeight: 700 }}>{band}</Text> band on {axisLabels[axis]}.
+              {value >= 80 ? ` Roughly the top fifth of respondents on this axis.` :
+                value >= 60 ? ` Above the midpoint — the leaning is visible without being extreme.` :
+                value >= 40 ? ` Mid-range. Your behaviour on this axis is contextual rather than fixed.` :
+                value >= 20 ? ` Below the midpoint — the opposite tendency reads as your default.` :
+                ` The bottom fifth — the inverse of this axis is your signature.`}
+              {" "}{reading.strength}
+            </Text>
+
+            <Text style={s.sectionHeading}>The two answers that placed you here</Text>
+            {[0, 1].map((slot) => {
+              const entry = top[slot];
+              if (!entry) {
+                return (
+                  <View key={`empty-${slot}`} wrap={false} style={s.card}>
+                    <Text style={s.cardLabel}>Signal {slot + 1}</Text>
+                    <Text style={[s.cardQuote, { color: FAINT, fontStyle: "italic" }]}>
+                      No single answer dominated — your {axisLabels[axis]} score is spread evenly across your choices.
+                    </Text>
+                  </View>
+                );
+              }
+              const q = questions.find((qq) => qq.id === entry.questionId);
+              return (
+                <View key={entry.questionId} wrap={false} style={s.card}>
+                  <Text style={s.cardLabel}>Signal {slot + 1}{entry.framework ? ` · ${entry.framework.name} · ${entry.framework.citation}` : ""}</Text>
+                  <Text style={s.cardPrompt}>{q?.prompt ?? entry.prompt}</Text>
+                  <Text style={s.cardQuote}>&ldquo;{entry.optionText}&rdquo;</Text>
+                  <Text style={s.cardImpact}>
+                    {entry.delta > 0 ? "+" : ""}{entry.delta} on {axisLabels[axis]}
+                    {entry.framework ? ` — ${entry.framework.probes}` : ""}
+                  </Text>
+                </View>
+              );
+            })}
+
+            <View style={s.divider} />
+
+            <View style={s.readingRow}>
+              <Text style={[s.readingLabel, { color: GOLD_LIGHT }]}>Strength</Text>
+              <Text style={s.readingBody}>{reading.strength}</Text>
+            </View>
+            <View style={s.readingRow}>
+              <Text style={[s.readingLabel, { color: CRIMSON }]}>Watch out</Text>
+              <Text style={s.readingBody}>{reading.warning}</Text>
+            </View>
+            <View style={s.readingRow}>
+              <Text style={[s.readingLabel, { color: GOLD }]}>Practice</Text>
+              <Text style={s.readingBody}>{reading.practice}</Text>
+            </View>
+
+            <PageChrome docId={docId} watermark={watermark} />
+            <Text style={s.pageNum}>{String(4 + idx).padStart(2, "0")}</Text>
+          </Page>
+        );
+      })}
+
+      {/* 8. THE ARCHETYPE — depth + history + totem */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>The Archetype</Text>
+        <Text style={s.pageTitle}>{archetype.name}.</Text>
+        <Text style={s.totemLabel}>Totem: {archetype.totem.animal}</Text>
+        <Text style={s.bodyEmphasis}>{archetype.totem.meaning}</Text>
+
+        <Text style={s.sectionHeading}>How this pattern shows up across history</Text>
+        <Text style={s.body}>{archetype.archetypeDepth}</Text>
+
+        <Text style={s.sectionHeading}>People who have carried this pattern</Text>
+        {archetype.famousExamples.map((name, i) => (
+          <View key={i} style={s.bullet}>
+            <Text style={s.bulletDot}>·</Text>
+            <Text style={s.bulletBody}>{name}</Text>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 9. HOW YOU COMPARE — vs population averages, vs runner-up */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>How You Compare</Text>
+        <Text style={s.pageTitle}>{personalName}, vs the rest of the room.</Text>
+        <Text style={s.body}>
+          Each row: <Text style={{ color: GOLD, fontWeight: 700 }}>gold</Text> is your score, the <Text style={{ color: CRIMSON, fontWeight: 700 }}>red mark</Text> is the population midpoint (50). The further your bar runs past the midpoint, the more pronounced your signal on that axis.
+        </Text>
+        {axesOrdered.map((axis) => {
+          const value = scores[axis];
+          return (
+            <View key={axis} style={s.compRow}>
+              <Text style={s.compLabel}>{axisLabels[axis]}</Text>
+              <View style={s.compTrack}>
+                <View style={[s.compYourBar, { width: `${value}%` }]} />
+                <View style={[s.compAvgMark, { left: "50%" }]} />
+              </View>
+              <Text style={s.compValue}>{value}</Text>
+            </View>
+          );
+        })}
+
+        <View style={s.divider} />
+
+        <Text style={s.sectionHeading}>Where {archetype.name} typically lives</Text>
+        <Text style={s.body}>
+          Pure {archetype.name} centroid: Control {Math.round((archetype.control.min + archetype.control.max) / 2)},
+          Visibility {Math.round((archetype.visibility.min + archetype.visibility.max) / 2)},
+          Time-Horizon {Math.round((archetype.timeHorizon.min + archetype.timeHorizon.max) / 2)},
+          Power-Source {Math.round((archetype.powerSource.min + archetype.powerSource.max) / 2)}.
+          {" "}Your fit to this pattern is {match.fit} out of 100. The higher the fit, the more the archetype description applies as written.
+        </Text>
+
+        <Text style={s.sectionHeading}>What {match.runnerUp.name} would have looked like</Text>
+        <Text style={s.body}>
+          The next-best direction match is {match.runnerUp.name} at {match.runnerUpFit} out of 100 — {match.gap} points behind. {confidence.description}
+        </Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 10. HOW YOU WIN */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>How You Win</Text>
+        <Text style={s.pageTitle}>The three contexts {archetype.name}s dominate.</Text>
+        <Text style={s.body}>
+          These are not generic strengths. They are the specific contexts where your archetype&apos;s wiring becomes a structural edge.
+        </Text>
+        {archetype.winScenarios.map((scenario, i) => (
+          <View key={i} style={{ marginBottom: 14 }}>
+            <Text style={s.sectionHeading}>{i + 1}. {scenario.label}</Text>
+            <Text style={s.body}>{scenario.text}</Text>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 11. HOW YOU LOSE */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>How You Lose</Text>
+        <Text style={s.pageTitle}>The failure modes the data shows for {archetype.name}.</Text>
+        <Text style={s.body}>
+          Every strength is a vulnerability mis-applied. These are the patterns history actually records. Reading them on the page now is cheaper than living them later.
+        </Text>
+        {archetype.loseModes.map((mode, i) => (
+          <View key={i} style={{ marginBottom: 14 }}>
+            <Text style={s.sectionHeading}>{i + 1}. {mode.label}</Text>
+            <Text style={[s.body, { color: CRIMSON }]}>{mode.text}</Text>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 12. POWER PAIRINGS */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Power Pairings</Text>
+        <Text style={s.pageTitle}>Who amplifies you. Who drains you.</Text>
+        <Text style={s.body}>
+          Archetypes interact predictably. Some compound your power; others dilute it. Choose collaborators with this in mind.
+        </Text>
+
+        <View wrap={false} style={s.pairCard}>
+          <Text style={s.pairTitle}>Amplifies you</Text>
+          <Text style={s.pairArchetype}>{ampArch?.name ?? archetype.pairings.amplifies.id}</Text>
+          <Text style={s.pairReason}>{archetype.pairings.amplifies.reason}</Text>
+        </View>
+
+        <View wrap={false} style={s.pairCard}>
+          <Text style={s.pairTitle}>Drains you</Text>
+          <Text style={s.pairArchetype}>{drainArch?.name ?? archetype.pairings.drains.id}</Text>
+          <Text style={s.pairReason}>{archetype.pairings.drains.reason}</Text>
+        </View>
+
+        <Text style={s.sectionHeading}>Your natural enemy</Text>
+        <Text style={s.bodyEmphasis}>{enemy.name} — {enemy.tagline}</Text>
+        <Text style={s.body}>{archetype.enemyTactics}</Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 13. 90-DAY ROADMAP */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>The 90-Day Roadmap</Text>
+        <Text style={s.pageTitle}>{personalName}, here is your move.</Text>
+        <Text style={s.body}>
+          This is not a generic self-improvement plan. Each phase corrects a failure mode that recurs in your archetype across history. Run it for 90 days. Re-take the assessment in 6 months. Watch the axis you&apos;re working on shift.
+        </Text>
+        {archetype.roadmap.map((phase, i) => (
+          <View key={i} style={s.roadmapRow}>
+            <Text style={s.roadmapPhase}>{phase.phase}</Text>
+            <Text style={s.roadmapWeeks}>{phase.weeks}</Text>
+            <Text style={s.roadmapFocus}>{phase.focus}</Text>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 13b. REAL LIFE PATTERNS — relatable scenarios */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Real Life Patterns</Text>
+        <Text style={s.pageTitle}>{personalName}, the parts that should feel familiar.</Text>
+        <Text style={s.body}>
+          {archetype.name}s tend to share specific patterns across work, relationships, and decision-making. Read these slowly. The point isn&apos;t flattery — it&apos;s recognition. If three of these read as accurate, the diagnosis is doing its job.
+        </Text>
+        {archetype.lifePatterns.map((p, i) => (
+          <View key={i} wrap={false} style={{ marginBottom: 14, padding: 12, backgroundColor: PAPER, borderLeft: `2px solid ${CRIMSON}` }}>
+            <Text style={{ fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", color: CRIMSON, marginBottom: 4, fontWeight: 700 }}>
+              {p.context}
+            </Text>
+            <Text style={{ fontSize: 11, lineHeight: 1.65, color: INK }}>{p.pattern}</Text>
+          </View>
+        ))}
+        <Text style={[s.caption, { marginTop: 8 }]}>
+          Not every pattern fits every person carrying this archetype. Mark the two that hit hardest. Those are the threads worth pulling on the next page.
+        </Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 13c. LEVEL UP — per-axis: keep, develop, watch */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>How to Level Up</Text>
+        <Text style={s.pageTitle}>Per-axis moves calibrated to your scores.</Text>
+        <Text style={s.body}>
+          For each axis, three moves: what to <Text style={{ color: GOLD_LIGHT, fontWeight: 700 }}>keep</Text> doing (your edge), what to <Text style={{ color: CRIMSON, fontWeight: 700 }}>develop</Text> next (the growth move), and what to <Text style={{ color: GOLD, fontWeight: 700 }}>watch</Text> for (the failure mode this score creates). Calibrated to where you actually scored, not a generic profile.
+        </Text>
+        {levelUp.map((entry) => (
+          <View key={entry.axis} wrap={false} style={{ marginBottom: 12 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+              <View style={{ width: 4, height: 14, backgroundColor: AXIS_COLOR[entry.axis], marginRight: 6 }} />
+              <Text style={{ fontFamily: "Playfair", fontSize: 13, fontWeight: 700, color: INK }}>{entry.label}</Text>
+              <Text style={{ fontSize: 9.5, color: SUB, marginLeft: 8, fontStyle: "italic" }}>· {entry.band} band, {entry.score}/100</Text>
+            </View>
+            <View style={{ paddingLeft: 10 }}>
+              <View style={{ flexDirection: "row", marginBottom: 3 }}>
+                <Text style={{ width: 60, fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD_LIGHT, fontWeight: 700, paddingTop: 1 }}>Keep</Text>
+                <Text style={{ flex: 1, fontSize: 10.5, lineHeight: 1.55, color: INK }}>{entry.moves.keep}</Text>
+              </View>
+              <View style={{ flexDirection: "row", marginBottom: 3 }}>
+                <Text style={{ width: 60, fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", color: CRIMSON, fontWeight: 700, paddingTop: 1 }}>Develop</Text>
+                <Text style={{ flex: 1, fontSize: 10.5, lineHeight: 1.55, color: INK }}>{entry.moves.develop}</Text>
+              </View>
+              <View style={{ flexDirection: "row" }}>
+                <Text style={{ width: 60, fontSize: 8.5, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, fontWeight: 700, paddingTop: 1 }}>Watch</Text>
+                <Text style={{ flex: 1, fontSize: 10.5, lineHeight: 1.55, color: SUB, fontStyle: "italic" }}>{entry.moves.watch}</Text>
+              </View>
+            </View>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 14. THE SEVEN LAWS */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>The Seven Laws</Text>
+        <Text style={s.pageTitle}>Imperatives specific to {archetype.name}.</Text>
+        <Text style={s.body}>
+          These aren&apos;t generic principles. Each one corrects a failure mode that recurs in your archetype across history. Read slowly. Pin one a week.
+        </Text>
+        {archetype.laws.map((law, i) => (
+          <View key={i} style={s.lawRow}>
+            <Text style={s.lawNum}>{String(i + 1).padStart(2, "0")}</Text>
+            <Text style={s.lawText}>{law}</Text>
+          </View>
+        ))}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 14b. PER-QUESTION ANALYSIS — every choice on one page */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>XII · Per-Question Analysis</Text>
+        <Text style={s.pageTitle}>Every choice. What it probed. Where it pulled.</Text>
+        <Text style={s.body}>
+          Below is the full audit trail of your scored answers. Each row names the research tradition the question maps to and the net axis impact of your choice. This is the data the engine ran your archetype on.
+        </Text>
+
+        {/* Table header */}
+        <View style={{ flexDirection: "row", marginTop: 8, marginBottom: 4, paddingBottom: 4, borderBottom: `1px solid ${GOLD}` }}>
+          <Text style={{ width: "44%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Question · Framework</Text>
+          <Text style={{ width: "40%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700 }}>Your answer</Text>
+          <Text style={{ width: "16%", fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, fontWeight: 700, textAlign: "right" }}>Net shift</Text>
+        </View>
+
+        {choiceQuestions.map((q, idx) => {
+          const a = answeredById.get(q.id);
+          const opt = a ? q.options.find((o) => o.id === a.o) : undefined;
+          const d = a?.d ?? { control: 0, visibility: 0, timeHorizon: 0, powerSource: 0 };
+          const totalDelta = (d.control ?? 0) + (d.visibility ?? 0) + (d.timeHorizon ?? 0) + (d.powerSource ?? 0);
+          const dominantAxis = (Object.keys(d) as AxisId[]).reduce((best, ax) =>
+            Math.abs(d[ax] ?? 0) > Math.abs(d[best] ?? 0) ? ax : best,
+            "control" as AxisId
+          );
+          return (
+            <View
+              key={q.id}
+              wrap={false}
+              style={{
+                flexDirection: "row",
+                marginBottom: 4,
+                paddingVertical: 4,
+                paddingHorizontal: 4,
+                backgroundColor: idx % 2 === 0 ? PAPER : "#FFFFFF",
+                borderLeft: `2px solid ${a ? AXIS_COLOR[dominantAxis] : "#DDD"}`,
+              }}
+            >
+              <View style={{ width: "44%", paddingRight: 6 }}>
+                <Text style={{ fontSize: 8.5, color: INK, lineHeight: 1.3 }}>{String(idx + 1).padStart(2, "0")}. {q.prompt}</Text>
+                {q.framework && (
+                  <Text style={{ fontSize: 7, color: GOLD, marginTop: 2, letterSpacing: 0.5 }}>
+                    {q.framework.name} · {q.framework.citation}
+                  </Text>
+                )}
+              </View>
+              <View style={{ width: "40%", paddingRight: 6 }}>
+                {a ? (
+                  <Text style={{ fontSize: 8.5, color: SUB, fontStyle: "italic", lineHeight: 1.3 }}>
+                    &ldquo;{opt?.text ?? "—"}&rdquo;
+                  </Text>
+                ) : (
+                  <Text style={{ fontSize: 8.5, color: FAINT, fontStyle: "italic", lineHeight: 1.3 }}>
+                    Not served — the match was already clear before the tiebreaker block.
+                  </Text>
+                )}
+              </View>
+              <Text style={{
+                width: "16%",
+                fontSize: 9,
+                fontFamily: "DM Sans",
+                fontWeight: 700,
+                textAlign: "right",
+                color: !a ? FAINT : totalDelta > 0 ? CRIMSON_DEEP : totalDelta < 0 ? "#3F5F7E" : SUB,
+                paddingTop: 2,
+              }}>
+                {a ? `${totalDelta > 0 ? "+" : ""}${totalDelta}` : "—"}
+              </Text>
+            </View>
+          );
+        })}
+
+        <Text style={[s.caption, { marginTop: 10 }]}>
+          Net shift is the sum of the four axis deltas for the option you chose (positive = toward command, exposure, patience and force; negative = toward autonomy, discretion, speed and magnetism). The colour stripe shows the axis the choice moved most. Every report lists all {choiceQuestions.length} questions in the same order; rows marked “not served” were skipped by the adaptive engine.
+        </Text>
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 14c. APPENDIX — Glossary + frameworks list */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>XIV · Appendix</Text>
+        <Text style={s.pageTitle}>Glossary &amp; framework reference.</Text>
+
+        <Text style={s.sectionHeading}>Axis glossary</Text>
+        {axesOrdered.map((axis) => (
+          <View key={axis} style={{ marginBottom: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 2 }}>
+              <View style={{ width: 4, height: 12, backgroundColor: AXIS_COLOR[axis], marginRight: 6 }} />
+              <Text style={{ fontFamily: "Playfair", fontSize: 12, fontWeight: 700 }}>{axisLabels[axis]}</Text>
+            </View>
+            <Text style={{ fontSize: 10, color: SUB, lineHeight: 1.5 }}>
+              <Text style={{ fontStyle: "italic" }}>Low (0–33):</Text> {axisNarratives[axis].low}
+              {"\n"}
+              <Text style={{ fontStyle: "italic" }}>Mid (34–66):</Text> {axisNarratives[axis].mid}
+              {"\n"}
+              <Text style={{ fontStyle: "italic" }}>High (67–100):</Text> {axisNarratives[axis].high}
+            </Text>
+          </View>
+        ))}
+
+        <View style={s.divider} />
+
+        <Text style={s.sectionHeading}>Confidence levels</Text>
+        <Text style={s.body}>
+          <Text style={{ fontWeight: 700 }}>Strong match.</Text> Fit gap to the runner-up of 14 points or more <Text style={{ fontStyle: "italic" }}>and</Text> PQ of 48 or more. The diagnosis is unambiguous.{"\n"}
+          <Text style={{ fontWeight: 700 }}>Clear match.</Text> Gap of 7–13 points with PQ of 40 or more. Dominant pattern with a measurable secondary lean.{"\n"}
+          <Text style={{ fontWeight: 700 }}>Borderline.</Text> Anything below those thresholds. Re-take in 3 months — most respondents drift toward one of the two over time.
+        </Text>
+
+        <Text style={s.sectionHeading}>Limits of this assessment</Text>
+        <Text style={s.body}>
+          Self-report assessments suffer from social desirability bias and impression management. The PQ mitigates this by offering four options per question that are each attractive to a different archetype, but no scale eliminates the effect. Treat this report as a hypothesis to test against your own behaviour, not a verdict. Rarity percentages are framework estimates, not sample-derived; they will be recomputed once the live distribution exceeds 5,000 completions.
+        </Text>
+
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
+      {/* 15. HIDDEN EDGE + LETTER CLOSE */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>Your Hidden Edge</Text>
+        <Text style={s.pageTitle}>What you held back.</Text>
+        <View style={s.card}>
+          <Text style={s.cardLabel}>Prompt: the last time you held back from saying what you actually thought</Text>
+          {freeTextById.q25 ? (
+            <Text style={s.cardQuote}>&ldquo;{freeTextById.q25}&rdquo;</Text>
+          ) : (
+            <Text style={[s.cardQuote, { color: FAINT, fontStyle: "italic" }]}>Left blank by the respondent.</Text>
+          )}
+        </View>
+        <Text style={s.body}>
+          {freeTextById.q25
+            ? `This is the lever most ${archetype.name}s never name. Holding back what you held back here is not weakness — it is leverage you have not yet decided to spend. The first time you say it in a room where it would cost you something, you change. Until then, this is the unused tool in the box.`
+            : `You skipped the descriptive question, but the pattern is still readable: every ${archetype.name} carries one quality that becomes their decisive edge when they stop hiding it. Pin one relationship this year where you let yours show.`}
+        </Text>
+
+        <View style={s.divider} />
+
+        <Text style={s.sectionHeading}>Closing — for {personalName}</Text>
+        <Text style={s.body}>{archetype.closingLetter}</Text>
+
+        <View style={s.divider} />
+
+        <Text style={s.label}>What&apos;s next</Text>
+        <Text style={s.body}>
+          The PQ Assessment is the diagnostic. The Sovereign book series is the long-form playbook. For your archetype, start with the chapters on
+          {scores.timeHorizon >= 60 ? " long-horizon leverage and concealed moves" : " fast execution and visible command"}
+          — they will read as descriptions of moves you have already made.
+        </Text>
+        <Text style={s.body}>Available at wayofgods.com.</Text>
+
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+    </Document>
+  );
+
+  const stream = await renderToStream(doc);
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    stream.on("data", (chunk: Buffer | string) =>
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
+    );
+    stream.on("end", () => resolve());
+    stream.on("error", (err: Error) => reject(err));
+  });
+
+  return { pdf: Buffer.concat(chunks), filename: `pq-${archetype.id}-${docId}.pdf` };
+}
