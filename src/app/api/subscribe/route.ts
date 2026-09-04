@@ -40,7 +40,6 @@ function sanitizeName(raw: string | undefined): string {
     .replace(/<[^>]*>/g, "")
     .replace(/https?:\/\/\S+/gi, "")
     .replace(/@\S+/g, "")
-    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1f\x7f]/g, "")
     .replace(/\s+/g, " ")
     .trim()
@@ -53,7 +52,6 @@ function sanitizeFreeText(raw: string | undefined): string {
     .replace(/<[^>]*>/g, "")
     .replace(/https?:\/\/\S+/gi, "")
     .replace(/@\S+/g, "")
-    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1f\x7f]/g, "")
     .trim()
     .slice(0, 280);
