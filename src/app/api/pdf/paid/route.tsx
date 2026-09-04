@@ -9,11 +9,10 @@ import {
   getArchetypeById,
   getEnemy,
   getRarityRank,
-  type Archetype,
   type AxisId,
 } from "@/data/archetypes";
 import { getResponseById } from "@/lib/supabase-server";
-import { perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves, type AxisAttribution } from "@/lib/result-analysis";
+import { perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves } from "@/lib/result-analysis";
 import { matchArchetype } from "@/lib/scoring";
 import { questions } from "@/data/questions";
 
