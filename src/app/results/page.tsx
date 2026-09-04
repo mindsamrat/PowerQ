@@ -324,7 +324,7 @@ function BlendSection({
         Archetype Blend
       </p>
       <p className="text-text-muted/45 text-xs italic font-[family-name:var(--font-body)] text-center mb-7 max-w-sm mx-auto">
-        No one is a pure type. Here's how your signature distributes across all 8 archetypes.
+        No one is a pure type. Here&apos;s how your signature distributes across all 8 archetypes.
       </p>
       <div className="flex flex-col gap-4">
         {top.map((entry) => (
