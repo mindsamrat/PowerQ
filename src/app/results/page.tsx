@@ -561,7 +561,7 @@ function SignatureAnswersSection({ archetype }: { archetype: Archetype }) {
                 className="text-[10px] font-[family-name:var(--font-body)] font-semibold"
                 style={{ color: archetype.cardAccent }}
               >
-                +{s.pullScore.toFixed(1)} pull
+                {s.pullScore}% aligned
               </span>
             </div>
             <p className="text-text-primary/75 text-xs md:text-sm font-[family-name:var(--font-body)] italic mb-2">
@@ -810,112 +810,49 @@ function FreePdfSection({
   scores: Record<AxisId, number>;
   pq: number;
 }) {
-  const [email, setEmail] = useState("");
-  const [honeypot, setHoneypot] = useState("");
-  const [status, setStatus] = useState<"idle" | "submitting" | "ready" | "error">("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (honeypot) return;
-    setStatus("submitting");
-    setError(null);
+  // The email was already captured on the final quiz step, so the free
+  // summary is a direct download — no second form.
+  const [token, setToken] = useState("");
+  useEffect(() => {
     try {
-      const res = await fetch("/api/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          archetypeId: archetype.id,
-          scores,
-          pq,
-          source: "free-pdf",
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        setError(body.error ?? "Could not process that email.");
-        setStatus("error");
-        return;
-      }
-      setDownloadUrl(body.downloadUrl);
-      setStatus("ready");
-    } catch {
-      setError("Network error. Try again in a moment.");
-      setStatus("error");
-    }
-  };
+      const id = sessionStorage.getItem("pq_response_id");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sessionStorage hydration on mount
+      if (id) setToken(id.slice(0, 8));
+    } catch { /* ignore */ }
+  }, []);
 
-  if (status === "ready" && downloadUrl) {
-    return (
-      <div className="glass rounded-2xl p-8 md:p-10 border-gradient text-center">
-        <p className="text-[10px] tracking-[0.3em] uppercase text-accent/60 mb-3 font-[family-name:var(--font-body)]">
-          Your Summary Is Ready
-        </p>
-        <h3 className="font-[family-name:var(--font-heading)] text-2xl font-bold text-text-primary mb-6">
-          PQ Free Summary — {archetype.name}
-        </h3>
-        <a
-          href={downloadUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block bg-accent hover:bg-accent-light text-white font-semibold text-sm py-3.5 px-8 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] glow-accent btn-shine"
-        >
-          Open your PDF
-        </a>
-        <p className="text-text-muted/40 text-[11px] mt-5 font-[family-name:var(--font-body)]">
-          We will also email it to you once ConvertKit is wired up.
-        </p>
-      </div>
-    );
-  }
+  const qs = new URLSearchParams({
+    id: archetype.id,
+    c: String(scores.control),
+    v: String(scores.visibility),
+    t: String(scores.timeHorizon),
+    p: String(scores.powerSource),
+    pq: String(pq),
+  });
+  if (token) qs.set("token", token);
+  const downloadUrl = `/api/pdf/free?${qs.toString()}`;
 
   return (
-    <div className="glass rounded-2xl p-8 md:p-10 border-gradient">
-      <p className="text-[10px] tracking-[0.3em] uppercase text-text-muted/40 mb-3 font-[family-name:var(--font-body)] text-center">
+    <div className="glass rounded-2xl p-8 md:p-10 border-gradient text-center">
+      <p className="text-[10px] tracking-[0.3em] uppercase text-text-muted/40 mb-3 font-[family-name:var(--font-body)]">
         Free 4-Page Summary
       </p>
-      <h3 className="font-[family-name:var(--font-heading)] text-2xl font-bold text-text-primary mb-2 text-center">
-        Get the PDF.
+      <h3 className="font-[family-name:var(--font-heading)] text-2xl font-bold text-text-primary mb-2">
+        Your summary is ready.
       </h3>
-      <p className="text-text-muted/50 text-sm mb-6 font-[family-name:var(--font-body)] text-center max-w-sm mx-auto">
-        Your archetype, axes, natural enemy, and the pattern to guard against.
-        Delivered instantly.
+      <p className="text-text-muted/50 text-sm mb-6 font-[family-name:var(--font-body)] max-w-sm mx-auto">
+        Your archetype, four axes, natural enemy, and the pattern to guard against. Same layout for everyone, so you can compare with friends.
       </p>
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="your@email.com"
-          required
-          autoComplete="email"
-          className="w-full glass rounded-xl px-5 py-3.5 text-text-primary text-sm font-[family-name:var(--font-body)] placeholder:text-text-muted/30 focus:outline-none"
-        />
-        <div className="absolute -left-[9999px]" aria-hidden="true">
-          <input
-            type="text"
-            tabIndex={-1}
-            autoComplete="off"
-            name="website"
-            value={honeypot}
-            onChange={(e) => setHoneypot(e.target.value)}
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={status === "submitting"}
-          className="bg-accent hover:bg-accent-light disabled:opacity-50 text-white font-semibold text-sm py-3.5 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] glow-accent btn-shine cursor-pointer"
-        >
-          {status === "submitting" ? "Generating..." : "Email me the summary"}
-        </button>
-      </form>
-      {error && (
-        <p className="text-accent text-xs mt-3 text-center font-[family-name:var(--font-body)]">{error}</p>
-      )}
-      <p className="text-text-muted/30 text-[10px] mt-4 text-center font-[family-name:var(--font-body)]">
-        No spam. Unsubscribe anytime.
+      <a
+        href={downloadUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-block bg-accent hover:bg-accent-light text-white font-semibold text-sm py-3.5 px-8 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] glow-accent btn-shine"
+      >
+        Open the free PDF
+      </a>
+      <p className="text-text-muted/30 text-[10px] mt-4 font-[family-name:var(--font-body)]">
+        Opens in a new tab. Save it from there.
       </p>
     </div>
   );

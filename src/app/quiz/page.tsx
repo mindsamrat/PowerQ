@@ -13,13 +13,14 @@ import {
   type FreeTextAnswer,
   type QuizProgress,
 } from "@/lib/quiz-engine";
-import type { ChoiceQuestion, EmailQuestion, FreeTextQuestion, OptionId, Question } from "@/data/questions";
+import { QUIZ_BANK_VERSION, type ChoiceQuestion, type EmailQuestion, type FreeTextQuestion, type OptionId, type Question } from "@/data/questions";
 
-const STORAGE_KEY = "pq_progress_v2";
+const STORAGE_KEY = "pq_progress_v3";
 const STORAGE_MAX_AGE_MS = 1000 * 60 * 60 * 48; // 48 hours
 
 interface StoredProgress {
   savedAt: number;
+  bankVersion: number;
   progress: QuizProgress;
   cursor: number;
 }
@@ -29,12 +30,18 @@ function loadProgress(): StoredProgress | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as StoredProgress;
-    if (Date.now() - parsed.savedAt > STORAGE_MAX_AGE_MS) {
+    const parsed = JSON.parse(raw) as Partial<StoredProgress>;
+    const stale =
+      typeof parsed.savedAt !== "number" ||
+      Date.now() - parsed.savedAt > STORAGE_MAX_AGE_MS ||
+      parsed.bankVersion !== QUIZ_BANK_VERSION ||
+      !parsed.progress ||
+      typeof parsed.cursor !== "number";
+    if (stale) {
       localStorage.removeItem(STORAGE_KEY);
       return null;
     }
-    return parsed;
+    return parsed as StoredProgress;
   } catch {
     return null;
   }
@@ -43,7 +50,7 @@ function loadProgress(): StoredProgress | null {
 function saveProgress(progress: QuizProgress, cursor: number) {
   if (typeof window === "undefined") return;
   try {
-    const payload: StoredProgress = { savedAt: Date.now(), progress, cursor };
+    const payload: StoredProgress = { savedAt: Date.now(), bankVersion: QUIZ_BANK_VERSION, progress, cursor };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch { /* ignore */ }
 }

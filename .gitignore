@@ -42,3 +42,11 @@ next-env.d.ts
 
 # PQ local subscriber scaffolding (swap for ConvertKit/Brevo in prod)
 .pq-subscribers.ndjson
+
+# environment (secrets live in Vercel; never commit)
+.env
+.env.*
+!.env.example
+
+# local dev fallback store
+.pq-subscribers.ndjson

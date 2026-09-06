@@ -11,6 +11,8 @@ import {
   getRarityRank,
   type AxisId,
 } from "@/data/archetypes";
+import { matchArchetype } from "@/lib/scoring";
+import { readConfidence } from "@/lib/result-analysis";
 
 export const runtime = "nodejs";
 
@@ -59,6 +61,11 @@ const styles = StyleSheet.create({
   narrative: { fontSize: 10, lineHeight: 1.6, color: "#555" },
   tagline: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 14, color: "#555", marginBottom: 18 },
   footer: { position: "absolute", bottom: 32, left: 64, right: 64, fontSize: 8, letterSpacing: 2, textTransform: "uppercase", color: "#999", textAlign: "center" },
+  tableHead: { flexDirection: "row", paddingBottom: 4, borderBottom: "1px solid #8B7355", marginTop: 6 },
+  tableHeadCell: { fontSize: 7.5, letterSpacing: 1.5, textTransform: "uppercase", color: "#555", fontWeight: 700 },
+  tableRow: { flexDirection: "row", paddingVertical: 4, paddingHorizontal: 4 },
+  tableKey: { width: "45%", fontSize: 9.5, color: "#0A0A0A", fontWeight: 700 },
+  tableVal: { width: "55%", fontSize: 9.5, color: "#7A0C1B", fontWeight: 700 },
 });
 
 function axisBarRow(axis: AxisId, value: number) {
@@ -91,11 +98,27 @@ export async function GET(req: Request) {
     powerSource: clamp(searchParams.get("p")),
   };
   const pq = clamp(searchParams.get("pq"));
-  const token = (searchParams.get("token") ?? "").slice(0, 8).toUpperCase();
+  const token = (searchParams.get("token") ?? "").replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase();
+  const match = matchArchetype(scores);
+  const confidence = readConfidence(match, pq);
+  const ordinal = rank === 1 ? "st" : rank === 2 ? "nd" : rank === 3 ? "rd" : "th";
+
+  // Same nine rows, same order, for every free summary — so two people can compare.
+  const glance: { k: string; v: string }[] = [
+    { k: "Archetype", v: archetype.name },
+    { k: "Fit", v: `${match.fit} / 100` },
+    { k: "Runner-up", v: `${match.runnerUp.name} · ${match.runnerUpFit} / 100` },
+    { k: "Confidence", v: confidence.label },
+    { k: "PQ (Signature Definition)", v: `${pq} / 100` },
+    { k: "Control", v: `${scores.control} · ${bandFor(scores.control).toUpperCase()}` },
+    { k: "Visibility", v: `${scores.visibility} · ${bandFor(scores.visibility).toUpperCase()}` },
+    { k: "Time-Horizon", v: `${scores.timeHorizon} · ${bandFor(scores.timeHorizon).toUpperCase()}` },
+    { k: "Power-Source", v: `${scores.powerSource} · ${bandFor(scores.powerSource).toUpperCase()}` },
+  ];
 
   const doc = (
     <Document author="Way of Gods" title={`PQ Summary - ${archetype.name}`}>
-      {/* Page 1 — cover */}
+      {/* Page 1 — cover + at-a-glance table */}
       <Page size="LETTER" style={styles.page}>
         <Text style={styles.label}>PQ Assessment — Free Summary</Text>
         <Text style={styles.heading}>{archetype.name}</Text>
@@ -103,18 +126,22 @@ export async function GET(req: Request) {
 
         <View style={styles.divider} />
 
-        <Text style={styles.sectionHeading}>Your Position</Text>
-        <Text style={styles.body}>
-          Your PQ score of {pq} and your 4-axis signature place you in {archetype.name} territory.
-          This archetype appears in approximately {archetype.rarity}% of assessed respondents — the{" "}
-          {rank}
-          {rank === 1 ? "st" : rank === 2 ? "nd" : rank === 3 ? "rd" : "th"} rarest of 8.
-        </Text>
+        <Text style={styles.sectionHeading}>At a glance</Text>
+        <View style={styles.tableHead}>
+          <Text style={[styles.tableHeadCell, { width: "45%" }]}>Variable</Text>
+          <Text style={[styles.tableHeadCell, { width: "55%" }]}>Value</Text>
+        </View>
+        {glance.map((row, i) => (
+          <View key={row.k} style={[styles.tableRow, { backgroundColor: i % 2 === 0 ? "#FAF6EE" : "#FFFFFF" }]}>
+            <Text style={styles.tableKey}>{row.k}</Text>
+            <Text style={styles.tableVal}>{row.v}</Text>
+          </View>
+        ))}
 
-        <Text style={styles.body}>
-          The full PQ Report goes deeper: how {archetype.name} operates in love, money, leadership, conflict,
-          and legacy, plus the seven laws specific to your archetype and the three failure modes that bring it
-          down. This free summary is a sketch of the full map.
+        <Text style={[styles.body, { marginTop: 14 }]}>
+          Your archetype is the one whose direction from neutral best matches your four axis scores; Fit says how closely.
+          PQ measures how sharply defined your signature is, not how much power you have — every archetype can score high.
+          {" "}{archetype.name} appears in approximately {archetype.rarity}% of respondents, the {rank}{ordinal} rarest of 8.
         </Text>
 
         <Text style={styles.footer}>Way of Gods · PQ Assessment · Document {token || "FREE"}</Text>

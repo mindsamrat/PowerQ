@@ -93,7 +93,7 @@ export async function GET(req: Request) {
               border: `3px solid ${accent}`,
             }}
           >
-            <div style={{ display: "flex", fontSize: 26, color: accent, letterSpacing: 4, textTransform: "uppercase" }}>Top</div>
+            <div style={{ display: "flex", fontSize: 26, color: accent, letterSpacing: 4, textTransform: "uppercase" }}>Rarity</div>
             <div style={{ display: "flex", fontFamily: "Playfair", fontSize: 96, fontWeight: 700, color: "#FFFFFF", lineHeight: 1, marginTop: 6 }}>
               {archetype.rarity}%
             </div>

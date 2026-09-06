@@ -59,6 +59,13 @@ export interface EmailQuestion {
 
 export type Question = ChoiceQuestion | FreeTextQuestion | EmailQuestion;
 
+/**
+ * Bump whenever question ids, option ids, or deltas change. In-progress
+ * quizzes saved in localStorage under an older version are discarded so a
+ * respondent is never scored against a bank their answers don't belong to.
+ */
+export const QUIZ_BANK_VERSION = 3;
+
 /*
  * DELTA DESIGN
  * ------------

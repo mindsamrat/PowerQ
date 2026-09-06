@@ -49,24 +49,7 @@ export default function RootLayout({
     <html lang="en" className={`${dmSans.variable} ${playfair.variable}`}>
       <body className="min-h-screen">
         {children}
-        <ConsoleWarning />
       </body>
     </html>
-  );
-}
-
-function ConsoleWarning() {
-  return (
-    <script
-      dangerouslySetInnerHTML={{
-        __html: `
-          console.log(
-            "%cThis site is monitored. Unauthorized access to source code or data is prohibited.",
-            "color: #C41E3A; font-size: 14px; font-weight: bold;"
-          );
-          document.addEventListener("contextmenu", function(e) { e.preventDefault(); });
-        `,
-      }}
-    />
   );
 }

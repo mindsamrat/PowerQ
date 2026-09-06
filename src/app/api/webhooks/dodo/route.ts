@@ -145,6 +145,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, idempotent: true, responseId });
     }
     const updated = await markResponsePaid(responseId, "");
+    if (!updated) {
+      // Return 5xx so Dodo retries the delivery — a paid customer must never
+      // be left unpaid because the database blinked.
+      console.error("[dodo-webhook] could not mark paid; asking Dodo to retry", { responseId });
+      return NextResponse.json({ ok: false, error: "could not persist payment; retry" }, { status: 503 });
+    }
     return NextResponse.json({ ok: true, updated, responseId });
   }
 

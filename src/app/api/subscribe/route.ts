@@ -115,7 +115,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: emailCheck.error ?? "Invalid email." }, { status: 400 });
   }
 
-  const rawAnswers = Array.isArray(body.answers) ? body.answers : [];
+  // Cap the array so a hostile payload can't make us loop over thousands of entries.
+  const rawAnswers = (Array.isArray(body.answers) ? body.answers : []).slice(0, 60);
   if (rawAnswers.length < 15) {
     // Fewer than 15 valid choice answers means someone is trying to skip the quiz.
     return NextResponse.json({ error: "Quiz appears incomplete." }, { status: 400 });

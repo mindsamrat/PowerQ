@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error("[checkout-dodo] uncaught", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unexpected server error." },
+      { error: "Unexpected server error. Please try again in a moment." },
       { status: 500 }
     );
   }
@@ -124,15 +124,17 @@ async function handleCheckout(req: Request) {
   // these are the only places to adjust.
   // Dodo's CustomerRequest is an untagged enum: either { customer_id } for
   // an existing customer, or { email, name, [phone_number] } to create a new
-  // one. Email-only is rejected. Derive a sensible display name from the
-  // local-part of the email so we always satisfy the schema.
+  // one. Email-only is rejected. Prefer the name the respondent typed on the
+  // final quiz step; fall back to a display name derived from the email.
   const localPart = response.email.split("@")[0] ?? "Customer";
-  const customerName = localPart
+  const derivedName = localPart
     .replace(/[._-]+/g, " ")
     .split(" ")
     .filter(Boolean)
     .map((w: string) => w[0].toUpperCase() + w.slice(1))
     .join(" ") || "Customer";
+  const storedName = typeof response.name === "string" ? response.name.trim() : "";
+  const customerName = storedName.length >= 2 ? storedName.slice(0, 60) : derivedName;
 
   const dodoPayload = {
     payment_link: true,
