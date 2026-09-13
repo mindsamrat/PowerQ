@@ -110,6 +110,8 @@ function ResultsPage() {
         <Divider />
         <ConfidenceSection confidence={confidence} match={match} accent={archetype.cardAccent} />
         <Divider />
+        <DoctrineSection archetype={archetype} />
+        <Divider />
         <BlendSection blend={blend} accent={archetype.cardAccent} />
         <Divider />
         <TraitsSection archetype={archetype} />
@@ -148,6 +150,48 @@ function ResultsPage() {
 
 function Divider() {
   return <div className="w-20 h-px bg-gradient-to-r from-transparent via-divider-dark to-transparent mx-auto my-12" />;
+}
+
+function DoctrineSection({ archetype }: { archetype: Archetype }) {
+  const href = `/book?from=results&archetype=${encodeURIComponent(archetype.id)}`;
+  return (
+    <section>
+      <div
+        className="glass rounded-2xl p-7 md:p-9 border-gradient relative overflow-hidden text-center"
+        style={{ borderColor: `${archetype.cardAccent}33` }}
+      >
+        <div
+          className="absolute -top-16 left-1/2 -translate-x-1/2 w-[320px] h-[200px] rounded-full blur-[90px] pointer-events-none"
+          style={{ background: `${archetype.cardAccent}22` }}
+        />
+        <p className="relative text-[10px] tracking-[0.3em] uppercase mb-3 font-[family-name:var(--font-body)]" style={{ color: "rgba(201,168,76,0.85)" }}>
+          The Book
+        </p>
+        <h3 className="relative font-[family-name:var(--font-heading)] text-2xl md:text-3xl font-bold text-text-primary mb-3">
+          Sovereign Doctrine
+        </h3>
+        <p className="relative text-text-primary/80 text-sm md:text-[15px] leading-[1.75] font-[family-name:var(--font-body)] max-w-md mx-auto mb-7">
+          {archetype.doctrineHook}
+        </p>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="relative inline-block font-semibold text-sm py-4 px-10 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] btn-shine"
+          style={{
+            background: "rgba(201,168,76,1)",
+            color: "#0A0A0A",
+            boxShadow: "0 0 24px rgba(201,168,76,0.35), 0 0 60px rgba(201,168,76,0.12)",
+          }}
+        >
+          Get Sovereign Doctrine
+        </a>
+        <p className="relative text-text-muted/40 text-[11px] mt-4 font-[family-name:var(--font-body)] italic">
+          Written for {archetype.name}s and the seven archetypes they have to deal with.
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function RevealSection({ archetype, pq }: { archetype: Archetype; pq: number }) {

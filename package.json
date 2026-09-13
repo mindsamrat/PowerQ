@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "audit:scoring": "tsx --tsconfig tsconfig.json scripts/scoring-audit.ts",
-    "smoke:pdf": "tsx --tsconfig tsconfig.json scripts/pdf-smoke.ts"
+    "smoke:pdf": "tsx --tsconfig tsconfig.json scripts/pdf-smoke.ts",
+    "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
     "@fontsource/eb-garamond": "^5.2.7",

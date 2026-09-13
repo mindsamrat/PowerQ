@@ -8,6 +8,8 @@ export interface Archetype {
   name: string;
   /** Short-form identity line. Shown on reveal and on the shareable card. */
   tagline: string;
+  /** One-line, archetype-specific reason to buy Sovereign Doctrine. Shown on results, /paid and in the report. */
+  doctrineHook: string;
   control: AxisRange;
   visibility: AxisRange;
   timeHorizon: AxisRange;
@@ -55,6 +57,7 @@ export const archetypes: Archetype[] = [
     id: "sovereign",
     name: "The Sovereign",
     tagline: "Commands openly. Builds visible kingdoms.",
+    doctrineHook: "Sovereign Doctrine is the manual for the throne you already sit on: how to hold it after the room stops telling you the truth.",
     control: { min: 80, max: 100 },
     visibility: { min: 70, max: 100 },
     timeHorizon: { min: 60, max: 90 },
@@ -120,6 +123,7 @@ export const archetypes: Archetype[] = [
     id: "shadow",
     name: "The Shadow",
     tagline: "Controls outcomes no one traces back.",
+    doctrineHook: "Sovereign Doctrine names the moves you make in the dark, and the one cost of concealment you have not priced yet.",
     control: { min: 70, max: 100 },
     visibility: { min: 0, max: 30 },
     timeHorizon: { min: 70, max: 100 },
@@ -185,6 +189,7 @@ export const archetypes: Archetype[] = [
     id: "architect",
     name: "The Architect",
     tagline: "Designs systems that outlive their creator.",
+    doctrineHook: "Sovereign Doctrine is a builder's book. It covers the part you skip: making people follow a system before the system exists.",
     control: { min: 60, max: 80 },
     visibility: { min: 40, max: 60 },
     timeHorizon: { min: 80, max: 100 },
@@ -250,6 +255,7 @@ export const archetypes: Archetype[] = [
     id: "oracle",
     name: "The Oracle",
     tagline: "Power through insight others cannot replicate.",
+    doctrineHook: "Sovereign Doctrine turns seeing into leverage. Insight nobody acts on is a diary. This is how you make them act.",
     control: { min: 15, max: 35 },
     visibility: { min: 30, max: 50 },
     timeHorizon: { min: 70, max: 90 },
@@ -315,6 +321,7 @@ export const archetypes: Archetype[] = [
     id: "blade",
     name: "The Blade",
     tagline: "Burns the old order. Decisive, kinetic, feared.",
+    doctrineHook: "Sovereign Doctrine is for people who move first. It shows you which strikes compound and which ones only feel good.",
     control: { min: 70, max: 100 },
     visibility: { min: 70, max: 100 },
     timeHorizon: { min: 0, max: 30 },
@@ -380,6 +387,7 @@ export const archetypes: Archetype[] = [
     id: "diplomat",
     name: "The Diplomat",
     tagline: "Wins without anyone knowing war was fought.",
+    doctrineHook: "Sovereign Doctrine covers the part composure cannot: when to stop managing the room and take it.",
     control: { min: 45, max: 65 },
     visibility: { min: 70, max: 90 },
     timeHorizon: { min: 70, max: 90 },
@@ -445,6 +453,7 @@ export const archetypes: Archetype[] = [
     id: "hunter",
     name: "The Hunter",
     tagline: "Opportunist. Moves fast. Extracts value. Exits.",
+    doctrineHook: "Sovereign Doctrine is about the exit you keep taking. It shows you the one position worth staying in until it pays.",
     control: { min: 45, max: 65 },
     visibility: { min: 15, max: 35 },
     timeHorizon: { min: 5, max: 25 },
@@ -510,6 +519,7 @@ export const archetypes: Archetype[] = [
     id: "flame",
     name: "The Flame",
     tagline: "Power through magnetism. Pulls rather than pushes.",
+    doctrineHook: "Sovereign Doctrine gives magnetism a spine: how to be wanted and still be obeyed.",
     control: { min: 20, max: 40 },
     visibility: { min: 80, max: 100 },
     timeHorizon: { min: 25, max: 45 },

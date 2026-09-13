@@ -1,4 +1,4 @@
-import { renderToStream, Document, Page, Text, View, StyleSheet, Font, Svg, Path, Polygon, Circle, Line, G } from "@react-pdf/renderer";
+import { renderToStream, Document, Page, Text, View, StyleSheet, Font, Svg, Path, Polygon, Circle, Line, G, Link } from "@react-pdf/renderer";
 import { join } from "node:path";
 import React from "react";
 import {
@@ -1068,11 +1068,13 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
 
         <Text style={s.label}>What&apos;s next</Text>
         <Text style={s.body}>
-          The PQ Assessment is the diagnostic. The Sovereign book series is the long-form playbook. For your archetype, start with the chapters on
+          This report is the diagnosis. The instruction manual is the book. {archetype.doctrineHook} Start with the chapters on
           {scores.timeHorizon >= 60 ? " long-horizon leverage and concealed moves" : " fast execution and visible command"}
           — they will read as descriptions of moves you have already made.
         </Text>
-        <Text style={s.body}>Available at wayofgods.com.</Text>
+        <Link src={`https://quiz.wayofgods.com/book?from=pdf&archetype=${archetype.id}`} style={{ fontFamily: "DM Sans", fontSize: 11, color: CRIMSON, textDecoration: "none", fontWeight: 700 }}>
+          Get Sovereign Doctrine: quiz.wayofgods.com/book
+        </Link>
 
         <PageChrome docId={docId} watermark={watermark} />
       </Page>

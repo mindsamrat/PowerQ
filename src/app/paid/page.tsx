@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 interface PaidStatus {
   status: "checking" | "paid" | "pending" | "error";
   pdfUrl?: string;
+  archetypeId?: string;
   message?: string;
 }
 
@@ -44,6 +45,7 @@ function PaidPage() {
           setState({
             status: "paid",
             pdfUrl: `/api/pdf/paid?id=${encodeURIComponent(responseId)}`,
+            archetypeId: typeof body.archetype_id === "string" ? body.archetype_id : undefined,
           });
           return;
         }
@@ -113,6 +115,24 @@ function PaidPage() {
             >
               Open My Full Report
             </a>
+
+            <div className="mt-14 pt-8 border-t border-divider-dark">
+              <p className="text-[10px] tracking-[0.3em] uppercase mb-3 font-[family-name:var(--font-body)]" style={{ color: "rgba(201,168,76,0.85)" }}>
+                Next: the playbook
+              </p>
+              <p className="text-text-muted/70 text-sm font-[family-name:var(--font-body)] leading-relaxed mb-5 max-w-sm mx-auto">
+                The report is the diagnosis. Sovereign Doctrine is the instruction manual, written for your archetype and the seven you have to deal with.
+              </p>
+              <a
+                href={`/book?from=paid${state.archetypeId ? `&archetype=${encodeURIComponent(state.archetypeId)}` : ""}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block font-semibold text-sm py-3.5 px-8 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] btn-shine"
+                style={{ background: "rgba(201,168,76,1)", color: "#0A0A0A", boxShadow: "0 0 24px rgba(201,168,76,0.3)" }}
+              >
+                Get Sovereign Doctrine
+              </a>
+            </div>
           </>
         )}
 

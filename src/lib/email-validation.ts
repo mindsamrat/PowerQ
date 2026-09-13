@@ -34,20 +34,34 @@ export async function verifyMxRecord(email: string): Promise<boolean> {
   const domain = email.split("@")[1];
   if (!domain) return false;
 
-  try {
-    const records = await dns.resolveMx(domain).catch(() => [] as { exchange: string }[]);
-    if (records.length > 0) return true;
+  // "Definitive" codes mean the resolver answered and the name/record does not
+  // exist. Anything else (timeout, SERVFAIL, EAI_AGAIN, no network) is a
+  // resolver problem, not the user's, so we let them through.
+  const DEFINITIVE = new Set(["ENOTFOUND", "ENODATA"]);
+  let sawTransientError = false;
 
-    // Some domains accept mail on the A record per RFC 5321 §5.1.
-    const a = await dns.resolve4(domain).catch(() => [] as string[]);
-    if (a.length > 0) return true;
+  const lookup = async <T,>(fn: () => Promise<T[]>): Promise<T[]> => {
+    try {
+      return await fn();
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? "";
+      if (!DEFINITIVE.has(code)) sawTransientError = true;
+      return [];
+    }
+  };
 
-    const aaaa = await dns.resolve6(domain).catch(() => [] as string[]);
-    return aaaa.length > 0;
-  } catch {
-    // Soft-fail: don't block real users due to transient DNS errors.
-    return true;
-  }
+  const mx = await lookup(() => dns.resolveMx(domain));
+  if (mx.length > 0) return true;
+
+  // Some domains accept mail on the A record per RFC 5321 §5.1.
+  const a = await lookup(() => dns.resolve4(domain));
+  if (a.length > 0) return true;
+
+  const aaaa = await lookup(() => dns.resolve6(domain));
+  if (aaaa.length > 0) return true;
+
+  // Nothing found. Only reject if every lookup was a definitive "does not exist".
+  return sawTransientError;
 }
 
 /** Combined check: format + disposable + MX. Server-side only. */
