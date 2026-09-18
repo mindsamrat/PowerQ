@@ -1,5 +1,9 @@
 // End-to-end functional check against a running server (default http://localhost:3100).
 // Run:  node scripts/e2e.mjs            (server started separately with `next start -p 3100`)
+//
+// Degraded-mode run — proves a respondent still gets a complete result when the
+// database is unreachable. Start the server with a Supabase URL that cannot
+// resolve, then:  E2E_EXPECT_DEGRADED=1 node scripts/e2e.mjs
 // Uses playwright-core + the locally installed Chromium. Exits non-zero on the first failure.
 import { chromium } from "playwright-core";
 import { createHmac } from "node:crypto";
@@ -23,8 +27,13 @@ const page = await ctx.newPage();
 const consoleErrors = [];
 page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
 page.on("console", (m) => {
-  // Deliberately-provoked 503 (checkout without env) and 404 (unknown response id) fetches are expected.
-  if (m.type() === "error" && !/Failed to load resource: .* (503|404)/.test(m.text())) consoleErrors.push(m.text());
+  if (m.type() !== "error") return;
+  const text = m.text();
+  // Expected during this run: the deliberately-provoked 503/404 fetches, and
+  // the app's own namespaced diagnostics (e.g. "[checkout] failed ...").
+  if (/Failed to load resource: .* (503|404)/.test(text)) return;
+  if (/^\[[a-z-]+\]/i.test(text)) return;
+  consoleErrors.push(text);
 });
 
 // ---------- Landing ----------
@@ -76,6 +85,21 @@ while (Date.now() < deadline) {
 ok(page.url().includes("/results"), "reached results page", `choice steps=${steps}, free-text steps=${sawFreeText}`);
 ok(steps >= 24 && steps <= 27, "served 24–27 choice questions", String(steps));
 
+// In degraded mode (database configured but unreachable) the respondent must
+// still land on a complete result, with a calm notice and no raw error text.
+const EXPECT_DEGRADED = process.env.E2E_EXPECT_DEGRADED === "1";
+if (EXPECT_DEGRADED) {
+  await page.waitForTimeout(2000);
+  // innerText = what a person actually sees (textContent would include Next's
+  // inline RSC payload scripts, which legitimately contain "undefined").
+  const t = await page.locator("body").innerText();
+  // innerText reflects CSS text-transform, so match case-insensitively.
+  ok(/saving your profile|profile not saved/i.test(t), "degraded: save-status notice shown");
+  ok(!/TypeError|fetch failed|\[object|undefined/i.test(t), "degraded: no raw technical error on screen");
+  ok(/pq score/i.test(t) && /out of 100/i.test(t), "degraded: full result still rendered");
+  await page.screenshot({ path: `${OUT}/06-degraded-results.png` });
+}
+
 // ---------- Results ----------
 await page.waitForTimeout(1800);
 const resultsText = (await page.textContent("body")) ?? "";
@@ -107,8 +131,12 @@ ok(cardRes.status() === 200 && (cardRes.headers()["content-type"] ?? "").include
 
 await page.click('button:has-text("Unlock Full Report")');
 await page.waitForTimeout(1500);
-const afterCheckout = (await page.textContent("body")) ?? "";
-ok(/Checkout error \(503\)|Payments aren.t configured|session has expired/.test(afterCheckout), "checkout without env shows graceful error", afterCheckout.match(/Checkout error[^.]*\./)?.[0] ?? "");
+const afterCheckout = await page.locator("body").innerText();
+const graceful = EXPECT_DEGRADED
+  ? /could not store your profile|Still saving your profile/i
+  : /Payments aren.t configured|unavailable right now|lost its session/i;
+ok(graceful.test(afterCheckout), "checkout shows a graceful, human error", afterCheckout.match(/(Payments[^\n]*|could not store[^\n]*|unavailable[^\n]*)/)?.[0] ?? "");
+ok(!/TypeError|fetch failed|\{"|status code/i.test(afterCheckout), "checkout error contains no raw technical detail");
 
 // ---------- API edge cases ----------
 const post = (path, body, headers = {}) => ctx.request.post(`${BASE}${path}`, { data: body, headers: { "content-type": "application/json", ...headers } });
@@ -144,6 +172,17 @@ if (WEBHOOK_SECRET) {
 }
 
 // ---------- Static / misc ----------
+r = await ctx.request.get(`${BASE}/api/health`);
+{
+  const h = await r.json();
+  ok(typeof h.database?.configured === "boolean" && typeof h.payments?.mode === "string", "health endpoint returns status shape", JSON.stringify(h.database));
+  // Naming an env var is fine and useful; leaking a value is not.
+  const leaked = JSON.stringify(h).toLowerCase();
+  const secretValuePatterns = ["supabase.co", "sb_secret_", "whsec_", "eyj", "bearer ", "pdt_"];
+  ok(!secretValuePatterns.some((p) => leaked.includes(p)), "health endpoint leaks no secret values", leaked.slice(0, 120));
+  if (EXPECT_DEGRADED) ok(r.status() === 503 && h.database.reachable === false, "health reports database unreachable in degraded mode");
+}
+
 r = await ctx.request.get(`${BASE}/robots.txt`);
 ok(r.status() === 200 && (await r.text()).includes("Disallow: /api/"), "robots.txt blocks /api");
 r = await ctx.request.get(`${BASE}/sitemap.xml`);

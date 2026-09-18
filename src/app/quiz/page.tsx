@@ -17,6 +17,21 @@ import { QUIZ_BANK_VERSION, type ChoiceQuestion, type EmailQuestion, type FreeTe
 
 const STORAGE_KEY = "pq_progress_v3";
 const STORAGE_MAX_AGE_MS = 1000 * 60 * 60 * 48; // 48 hours
+/** Holds a completed submission that could not be saved, for background retry. */
+const PENDING_KEY = "pq_pending_submit_v1";
+
+interface SubscribeResponse {
+  ok?: boolean;
+  degraded?: boolean;
+  responseId?: string | null;
+  error?: string;
+  result?: {
+    archetypeId?: string;
+    scores?: { control?: number; visibility?: number; timeHorizon?: number; powerSource?: number };
+    pq?: number;
+  } | null;
+  downloadUrl?: string;
+}
 
 interface StoredProgress {
   savedAt: number;
@@ -176,47 +191,80 @@ export default function QuizPage() {
         source: "free-pdf" as const,
       };
 
-      try {
-        const res = await fetch("/api/subscribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          return { ok: false, error: body.error ?? "Could not save your response. Try again." };
-        }
-
-        clearProgress();
+      // Three outcomes worth telling apart:
+      //   ok          - saved, carry on
+      //   rejected    - the user must change something (bad email, rate limit)
+      //   unavailable - our side is down; their answers are still valid
+      const attempt = async (): Promise<{
+        status: "ok" | "rejected" | "unavailable";
+        body?: SubscribeResponse;
+        error?: string;
+      }> => {
         try {
-          sessionStorage.setItem("pq_freetext_v1", JSON.stringify(progress.freeTextAnswers));
-          sessionStorage.setItem("pq_answers_v1", JSON.stringify(payload.answers));
-          if (body.responseId) sessionStorage.setItem("pq_response_id", body.responseId);
-        } catch { /* ignore */ }
+          const res = await fetch("/api/subscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const body = (await res.json().catch(() => ({}))) as SubscribeResponse;
+          if (res.ok) return { status: "ok", body };
+          if (res.status >= 500) return { status: "unavailable", error: body.error };
+          return { status: "rejected", error: body.error };
+        } catch {
+          return { status: "unavailable" };
+        }
+      };
 
-        // Prefer the server-computed result so the URL matches Supabase.
-        // Falls back to the local finalize() output if the server didn't echo one.
-        const serverResult = body.result ?? null;
-        const archetypeId = serverResult?.archetypeId ?? finalResult.match.archetype.id;
-        const c = serverResult?.scores?.control ?? finalResult.scores.control;
-        const v = serverResult?.scores?.visibility ?? finalResult.scores.visibility;
-        const t = serverResult?.scores?.timeHorizon ?? finalResult.scores.timeHorizon;
-        const p = serverResult?.scores?.powerSource ?? finalResult.scores.powerSource;
-        const pqVal = serverResult?.pq ?? finalResult.pq;
-
-        const qs = new URLSearchParams({
-          id: archetypeId,
-          c: String(c),
-          v: String(v),
-          t: String(t),
-          p: String(p),
-          pq: String(pqVal),
-        });
-        router.push(`/results?${qs.toString()}`);
-        return { ok: true };
-      } catch {
-        return { ok: false, error: "Network error. Try again." };
+      let outcome = await attempt();
+      if (outcome.status === "unavailable") {
+        await new Promise((r) => window.setTimeout(r, 1200));
+        outcome = await attempt();
       }
+
+      if (outcome.status === "rejected") {
+        return { ok: false, error: outcome.error ?? "Could not save your response. Try again." };
+      }
+
+      // From here we always show the result. The scores were computed on this
+      // device from the same question bank the server uses, so they are correct
+      // whether or not the save succeeded.
+      const body = outcome.body ?? {};
+      const persisted = typeof body.responseId === "string" && body.responseId.length > 0;
+
+      clearProgress();
+      try {
+        sessionStorage.setItem("pq_freetext_v1", JSON.stringify(progress.freeTextAnswers));
+        sessionStorage.setItem("pq_answers_v1", JSON.stringify(payload.answers));
+        if (persisted) {
+          sessionStorage.setItem("pq_response_id", body.responseId as string);
+          localStorage.removeItem(PENDING_KEY);
+        } else {
+          // Queue the submission so the results page can retry in the
+          // background. Nothing is lost if the database wakes up shortly.
+          localStorage.setItem(PENDING_KEY, JSON.stringify({ savedAt: Date.now(), payload }));
+        }
+      } catch { /* ignore */ }
+
+      // Prefer the server-computed result so the URL matches Supabase.
+      // Falls back to the local finalize() output if the server didn't echo one.
+      const serverResult = body.result ?? null;
+      const archetypeId = serverResult?.archetypeId ?? finalResult.match.archetype.id;
+      const c = serverResult?.scores?.control ?? finalResult.scores.control;
+      const v = serverResult?.scores?.visibility ?? finalResult.scores.visibility;
+      const t = serverResult?.scores?.timeHorizon ?? finalResult.scores.timeHorizon;
+      const p = serverResult?.scores?.powerSource ?? finalResult.scores.powerSource;
+      const pqVal = serverResult?.pq ?? finalResult.pq;
+
+      const qs = new URLSearchParams({
+        id: archetypeId,
+        c: String(c),
+        v: String(v),
+        t: String(t),
+        p: String(p),
+        pq: String(pqVal),
+      });
+      router.push(`/results?${qs.toString()}`);
+      return { ok: true };
     },
     [progress, router]
   );

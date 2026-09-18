@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { validateEmail } from "@/lib/email-validation";
 import { recordSubscriber } from "@/lib/subscriber-store";
-import { saveResponseToSupabase } from "@/lib/supabase-server";
+import { saveResponseToSupabase, isSupabaseConfigured } from "@/lib/supabase-server";
 import { calculateAxisScores, matchArchetype, computePQ, type ScoredAnswer } from "@/lib/scoring";
 import { questions } from "@/data/questions";
 import { checkResponsesPerIp, getClientIp } from "@/lib/rate-limit";
@@ -142,16 +142,20 @@ export async function POST(req: Request) {
   const referrer = req.headers.get("referer");
   const ip = getClientIp(req);
 
-  // Rate limit: at most 3 completed quizzes per IP per 24 hours.
-  const supabaseConfigured = !!(process.env.SUPABASE_URL &&
-    (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY));
+  // Rate limit: at most 3 completed quizzes per IP per 24 hours. Never let a
+  // database problem here block a genuine completion.
+  const supabaseConfigured = isSupabaseConfigured();
   if (supabaseConfigured) {
-    const limit = await checkResponsesPerIp(ip, 3, 24);
-    if (!limit.allowed) {
-      return NextResponse.json(
-        { error: "You've already completed this assessment a few times today. Try again tomorrow." },
-        { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
-      );
+    try {
+      const limit = await checkResponsesPerIp(ip, 3, 24);
+      if (!limit.allowed) {
+        return NextResponse.json(
+          { error: "You've already completed this assessment a few times today. Try again tomorrow." },
+          { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
+        );
+      }
+    } catch (err) {
+      console.warn("[subscribe] rate-limit check failed; allowing", err);
     }
   }
 
@@ -192,16 +196,15 @@ export async function POST(req: Request) {
         ipAddress: ip,
       });
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown";
-      console.error("[subscribe] supabase write failed", err);
-      return NextResponse.json(
-        { error: `Could not save your response: ${detail}` },
-        { status: 500 }
-      );
+      // The database is down or the project is paused. Someone who just
+      // answered 27 questions must still get their result, so we log loudly
+      // and continue in a degraded mode: results and the free summary work,
+      // only the paid report (which needs a stored row) is unavailable. The
+      // client re-submits in the background so nothing is lost if the
+      // database comes back within the session.
+      console.error("[subscribe] supabase write failed; serving degraded result", err);
     }
-  }
-
-  if (!responseId) {
+  } else {
     // Dev fallback when Supabase env is missing locally.
     const record = await recordSubscriber({
       email: emailCheck.normalized,
@@ -222,11 +225,13 @@ export async function POST(req: Request) {
     t: String(scores.timeHorizon),
     p: String(scores.powerSource),
     pq: String(pq),
-    token: responseId.slice(0, 8),
   });
+  if (responseId) qs.set("token", responseId.slice(0, 8));
 
   return NextResponse.json({
     ok: true,
+    // true when the result is valid but could not be persisted.
+    degraded: !responseId,
     responseId,
     // Tell the client the server-computed result so the URL it builds for
     // /results matches what's actually in the database.

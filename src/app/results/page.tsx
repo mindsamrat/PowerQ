@@ -49,8 +49,98 @@ export default function ResultsPageWrapper() {
   );
 }
 
+/** Holds a completed submission the quiz page could not save. Must match quiz/page.tsx. */
+const PENDING_KEY = "pq_pending_submit_v1";
+const PENDING_MAX_AGE_MS = 1000 * 60 * 60 * 48;
+
+type SaveStatus = "ok" | "retrying" | "unsaved";
+
+/**
+ * If the quiz finished while the database was unreachable, the submission was
+ * parked in localStorage. Retry it quietly here so a brief outage doesn't cost
+ * the respondent their report — or us the lead.
+ */
+function usePendingSubmitRecovery(): SaveStatus {
+  const [status, setStatus] = useState<SaveStatus>("ok");
+
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      if (sessionStorage.getItem("pq_response_id")) return;
+      raw = localStorage.getItem(PENDING_KEY);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+
+    let parsed: { savedAt?: number; payload?: unknown } | null = null;
+    try { parsed = JSON.parse(raw) as { savedAt?: number; payload?: unknown }; } catch { /* ignore */ }
+    if (!parsed?.payload || typeof parsed.savedAt !== "number" || Date.now() - parsed.savedAt > PENDING_MAX_AGE_MS) {
+      try { localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
+      return;
+    }
+
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- entering retry state on mount
+    setStatus("retrying");
+
+    (async () => {
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
+        if (attempt > 0) await new Promise((r) => window.setTimeout(r, 4000 * attempt));
+        try {
+          const res = await fetch("/api/subscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed.payload),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (res.ok && typeof body.responseId === "string" && body.responseId) {
+            try {
+              sessionStorage.setItem("pq_response_id", body.responseId);
+              localStorage.removeItem(PENDING_KEY);
+            } catch { /* ignore */ }
+            if (!cancelled) setStatus("ok");
+            return;
+          }
+          // A 4xx means the payload itself is the problem; retrying won't help.
+          if (res.status >= 400 && res.status < 500) break;
+        } catch { /* network still down — keep trying */ }
+      }
+      if (!cancelled) setStatus("unsaved");
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  return status;
+}
+
+function SaveStatusNotice({ status }: { status: SaveStatus }) {
+  if (status === "ok") return null;
+  const retrying = status === "retrying";
+  return (
+    <div
+      className="mt-10 rounded-xl px-5 py-4 text-center"
+      style={{ background: "rgba(232,168,90,0.07)", border: "1px solid rgba(232,168,90,0.22)" }}
+    >
+      <p
+        className="text-[10px] tracking-[0.25em] uppercase mb-2 font-[family-name:var(--font-body)]"
+        style={{ color: "#E8A85A" }}
+      >
+        {retrying ? "Saving your profile" : "Profile not saved"}
+      </p>
+      <p className="text-text-muted/70 text-xs leading-relaxed font-[family-name:var(--font-body)]">
+        {retrying
+          ? "Everything below is your real result. We're still storing your profile — give it a few seconds."
+          : "Everything below is your real result and yours to keep. We could not store your profile just now, so the full report cannot be prepared yet. Refresh this page in a minute and it will retry."}
+      </p>
+    </div>
+  );
+}
+
 function ResultsPage() {
   const params = useSearchParams();
+  const saveStatus = usePendingSubmitRecovery();
   const id = params.get("id") ?? "sovereign";
   const archetype = getArchetypeById(id) ?? archetypes[0];
   const scores: Record<AxisId, number> = useMemo(
@@ -107,6 +197,7 @@ function ResultsPage() {
 
       <div className="relative z-10 max-w-lg mx-auto px-6 pb-24">
         <RevealSection archetype={archetype} pq={pq} />
+        <SaveStatusNotice status={saveStatus} />
         <Divider />
         <ConfidenceSection confidence={confidence} match={match} accent={archetype.cardAccent} />
         <Divider />
@@ -134,7 +225,7 @@ function ResultsPage() {
         <Divider />
         <ShareCardSection archetype={archetype} cardUrl={cardUrl} />
         <Divider />
-        <UpsellSection archetype={archetype} scores={scores} pq={pq} />
+        <UpsellSection archetype={archetype} scores={scores} pq={pq} saveStatus={saveStatus} />
         <Divider />
         <ComparisonSection archetype={archetype} />
 
@@ -753,20 +844,22 @@ function UpsellSection({
   archetype,
   scores,
   pq,
+  saveStatus,
 }: {
   archetype: Archetype;
   scores: Record<AxisId, number>;
   pq: number;
+  saveStatus: SaveStatus;
 }) {
   return (
     <section className="flex flex-col gap-8">
-      <PaidUnlockCard archetype={archetype} />
+      <PaidUnlockCard archetype={archetype} saveStatus={saveStatus} />
       <FreePdfSection archetype={archetype} scores={scores} pq={pq} />
     </section>
   );
 }
 
-function PaidUnlockCard({ archetype }: { archetype: Archetype }) {
+function PaidUnlockCard({ archetype, saveStatus }: { archetype: Archetype; saveStatus: SaveStatus }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -780,7 +873,13 @@ function PaidUnlockCard({ archetype }: { archetype: Archetype }) {
           : null;
 
       if (!responseId) {
-        setError("Your session has expired. Re-take the quiz to unlock the report.");
+        setError(
+          saveStatus === "retrying"
+            ? "Still saving your profile — give it a few seconds and try again."
+            : saveStatus === "unsaved"
+              ? "We could not store your profile a moment ago, so the report cannot be prepared yet. Refresh this page to retry."
+              : "This link has lost its session. Retake the assessment to unlock the report."
+        );
         setLoading(false);
         return;
       }
@@ -795,18 +894,17 @@ function PaidUnlockCard({ archetype }: { archetype: Archetype }) {
       try { body = JSON.parse(text); } catch { /* keep raw */ }
 
       if (!res.ok || !body.checkoutUrl) {
+        console.error("[checkout] failed", res.status, text.slice(0, 300));
         setError(
-          body.error
-            ? `Checkout error (${res.status}): ${body.error}`
-            : `Checkout failed (${res.status}). Server said: ${text.slice(0, 200)}`
+          body.error ?? "Checkout is unavailable right now. Please try again in a moment."
         );
         setLoading(false);
         return;
       }
       window.location.href = body.checkoutUrl;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "unknown";
-      setError(`Network error: ${msg}. Try again.`);
+      console.error("[checkout] network error", err);
+      setError("Could not reach the checkout. Check your connection and try again.");
       setLoading(false);
     }
   };
