@@ -14,6 +14,9 @@ interface AnswerEntry {
   // d is accepted in the payload for backward compat but IGNORED server-side —
   // we look up the actual delta from the question bank to prevent score forgery.
   d?: { control: number; visibility: number; timeHorizon: number; powerSource: number };
+  // Displayed position 0–3 (options are shuffled per session). Stored for
+  // position-bias analysis; never affects scoring.
+  pos?: number;
 }
 
 interface FreeTextEntry {
@@ -168,9 +171,11 @@ export async function POST(req: Request) {
       if (!q || q.kind === "free-text" || q.kind === "email") return null;
       const option = q.options.find((o) => o.id === a.o);
       if (!option) return null;
+      const pos = Number.isInteger(a.pos) && (a.pos as number) >= 0 && (a.pos as number) <= 3 ? (a.pos as number) : undefined;
       return {
         q: q.id,
         o: option.id,
+        ...(pos !== undefined ? { pos } : {}),
         d: {
           control: option.scores.control ?? 0,
           visibility: option.scores.visibility ?? 0,

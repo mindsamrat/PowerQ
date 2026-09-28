@@ -138,7 +138,7 @@ export interface ResponseRow {
   archetypeId: string;
   pq: number;
   scores: { control: number; visibility: number; timeHorizon: number; powerSource: number };
-  answers: { q: string; o: string; d: { control: number; visibility: number; timeHorizon: number; powerSource: number } }[];
+  answers: { q: string; o: string; pos?: number; d: { control: number; visibility: number; timeHorizon: number; powerSource: number } }[];
   freeText: { questionId: string; text: string }[];
   userAgent?: string | null;
   ipAddress?: string | null;

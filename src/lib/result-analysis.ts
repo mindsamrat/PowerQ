@@ -1,5 +1,6 @@
-import { archetypes, getCentroid, type Archetype, type AxisId } from "@/data/archetypes";
+import { archetypes, getCentroid, axisLabels, type Archetype, type AxisId } from "@/data/archetypes";
 import { questions } from "@/data/questions";
+import { centredOptionVector, cosine, AXES as AXIS_ORDER } from "@/lib/archetype-insights";
 import type { AxisScores, MatchResult } from "@/lib/scoring";
 import type { StoredAnswer } from "@/lib/signature-answers";
 
@@ -354,6 +355,291 @@ export function levelUpMoves(scores: AxisScores): LevelUpEntry[] {
       moves: LEVEL_UP[axis][band],
     };
   });
+}
+
+// ---------- Axis interactions ----------
+//
+// An archetype is a combination, not a list of four numbers. These rules read
+// the strongest pairwise interactions in a profile, each tied to the mechanism
+// that explains it. Exactly two readings are always returned so the report has
+// a fixed structure; fillers cover profiles with fewer than two clear pairings.
+
+export interface InteractionReading {
+  id: string;
+  label: string;
+  /** The two axes involved, or null when the reading concerns the whole profile. */
+  axes: [AxisId, AxisId] | null;
+  /** 0–100: how far both axes sit in the rule's direction. 0 for fillers. */
+  strength: number;
+  framework: string;
+  mechanism: string;
+  edge: string;
+  risk: string;
+  move: string;
+}
+
+type Direction = "high" | "low";
+interface InteractionRule extends Omit<InteractionReading, "strength" | "axes"> {
+  axes: [AxisId, AxisId];
+  dirs: [Direction, Direction];
+}
+
+const INTERACTION_RULES: InteractionRule[] = [
+  {
+    id: "operator", label: "The Operator", axes: ["control", "visibility"], dirs: ["high", "low"],
+    framework: "Bases of Social Power — French & Raven, 1959",
+    mechanism: "You decide outcomes but keep your name off them: authority exercised through information and structure rather than a public seat.",
+    edge: "Decisions land without a target on your back. Rivals aim at the visible people while you set the terms.",
+    risk: "Credit drifts to whoever is seen. When budgets are cut, the invisible are cut first, however essential.",
+    move: "Once a quarter, put your name on one decision in writing. Not for ego: for a record.",
+  },
+  {
+    id: "standard-bearer", label: "The Standard-Bearer", axes: ["control", "visibility"], dirs: ["high", "high"],
+    framework: "Expectation States Theory — Berger, Cohen & Zelditch, 1972",
+    mechanism: "Visible command. People confer status on you before you ask, and you accept it. Your authority compounds because it is seen.",
+    edge: "Rooms organise around you fast. Speed of decision is your structural advantage.",
+    risk: "The visibility that confers status also filters what reaches you. By year three, people edit reality before it gets to you.",
+    move: "Pay one person to disagree with you in writing every week. Make dissent structural, not optional.",
+  },
+  {
+    id: "performer", label: "The Performer", axes: ["control", "visibility"], dirs: ["low", "high"],
+    framework: "Impression Management — Goffman, 1959",
+    mechanism: "You are seen more than you steer. Attention is real currency, but it is being spent on a stage rather than a decision.",
+    edge: "You can move a room's mood in minutes. Recruiting, selling and rallying come naturally.",
+    risk: "A spokesperson is not a principal. Without decision rights, your visibility serves someone else's outcome.",
+    move: "Convert one platform into one decision you own outright. Trade some applause for a signature.",
+  },
+  {
+    id: "ghost", label: "The Ghost", axes: ["control", "visibility"], dirs: ["low", "low"],
+    framework: "Strength of Weak Ties — Granovetter, 1973",
+    mechanism: "Neither commanding nor seen. Your influence runs through relationships and timing: who you know, when you call.",
+    edge: "You are impossible to target and easy to underestimate. Both are assets in the right game.",
+    risk: "Without a claim or a face, leverage decays into irrelevance. People forget the architect of wins they enjoyed.",
+    move: "Name your leverage to yourself in one sentence. If you cannot, you do not yet have it.",
+  },
+  {
+    id: "patient-threat", label: "The Patient Threat", axes: ["timeHorizon", "powerSource"], dirs: ["high", "high"],
+    framework: "Credible Commitment — Schelling, 1960",
+    mechanism: "You play long and you carry consequence. People pre-empt you because they have watched you wait, and then act.",
+    edge: "Deterrence. Most fights never happen because the other side has already done the math.",
+    risk: "Living in the long game with a loaded weapon breeds suspicion. You start seeing threats that are only noise.",
+    move: "One visible act of mercy a year, chosen deliberately. It keeps the deterrent credible rather than paranoid.",
+  },
+  {
+    id: "cultivator", label: "The Cultivator", axes: ["timeHorizon", "powerSource"], dirs: ["high", "low"],
+    framework: "Reciprocity and Social Capital — Cialdini, 1984; Coleman, 1988",
+    mechanism: "Patience plus pull. You compound relationships the way others compound capital, and you are rarely the one who calls the debt.",
+    edge: "People stay. Loyalty built this way survives your bad years.",
+    risk: "Warmth without a spine becomes service. The network loves you and ignores your asks.",
+    move: "One hard no per quarter that costs you a room. Pull only holds value if it can be withdrawn.",
+  },
+  {
+    id: "enforcer", label: "The Enforcer", axes: ["timeHorizon", "powerSource"], dirs: ["low", "high"],
+    framework: "Dominance Contest — Mazur, 1985",
+    mechanism: "Fast and forceful. You settle questions of status in the moment rather than letting them ripen.",
+    edge: "Nobody tests you twice. Your reputation fights the second round for you.",
+    risk: "Every bridge burned early was a road you might have needed later. Speed spends relationships.",
+    move: "A 24-hour rule for any response that cannot be undone. Not softer: later.",
+  },
+  {
+    id: "sprinter", label: "The Sprinter", axes: ["timeHorizon", "powerSource"], dirs: ["low", "low"],
+    framework: "Approach Motivation — Gable, 2006",
+    mechanism: "Fast and warm. You open doors quickly and leave before anyone can close them on you.",
+    edge: "Opportunity finds you because you are already moving when it appears.",
+    risk: "Nothing compounds. Ten quick wins are worth less than one position held through the boring middle.",
+    move: "Choose one thing you would normally exit and stay twelve more months. Learn what compounding feels like.",
+  },
+  {
+    id: "commander-moment", label: "Commander of the Moment", axes: ["control", "timeHorizon"], dirs: ["high", "low"],
+    framework: "Recognition-Primed Decision — Klein, 1998",
+    mechanism: "You decide fast and you decide for others. Your first read is usually good, which is exactly why you stop checking.",
+    edge: "In a crisis you are the calmest and fastest person in the room.",
+    risk: "Pattern recognition that works nine times fails on the tenth: the one that looked familiar and was not.",
+    move: "For any decision above a threshold you set, one deliberate 48-hour delay. Keep the instinct; add the check.",
+  },
+  {
+    id: "institution", label: "The Institution-Builder", axes: ["control", "timeHorizon"], dirs: ["high", "high"],
+    framework: "Generativity — Erikson, 1950",
+    mechanism: "Command in service of something that outlasts you. You build rules, then people, then a thing that no longer needs you.",
+    edge: "What you build works when you are not in the room. That is rarer than talent.",
+    risk: "Rules outlive their reasons. The structure that protected the mission starts protecting itself.",
+    move: "Kill one rule a quarter. If nothing breaks, it was dead already.",
+  },
+  {
+    id: "magnet", label: "The Magnet", axes: ["visibility", "powerSource"], dirs: ["high", "low"],
+    framework: "Referent Power — French & Raven, 1959",
+    mechanism: "Seen and wanted. People move toward you without being asked, and you make sure they can see where you are.",
+    edge: "Attention and affection arrive together. Building an audience costs you less than it costs anyone else.",
+    risk: "No teeth. When someone finally crosses you, the room waits to see whether you can do anything about it.",
+    move: "State one consequence in public and follow through once. Magnetism with one demonstrated edge is a different weapon.",
+  },
+  {
+    id: "unseen-hand", label: "The Unseen Hand", axes: ["visibility", "powerSource"], dirs: ["low", "high"],
+    framework: "Coercive Power under Low Visibility — French & Raven, 1959",
+    mechanism: "Feared more than known. Your consequence is real; your face is not attached to it.",
+    edge: "Rumour does your work. People imagine you larger than you are.",
+    risk: "A vacuum fills with stories. Without a record, the stories are written by others, and rarely in your favour.",
+    move: "One on-the-record position a quarter, in your own words. Let the record compete with the rumour.",
+  },
+];
+
+const CHAMELEON_FILLER: Omit<InteractionReading, "strength"> = {
+  id: "chameleon", label: "The Chameleon", axes: null,
+  framework: "Self-Monitoring — Snyder, 1974",
+  mechanism: "No axis sits far from neutral. You read rooms and adapt; your power style is whichever one the situation rewards.",
+  edge: "You can work with every archetype because you can pass as most of them.",
+  risk: "No signature means no reputation. People cannot predict you, so they cannot rely on you.",
+  move: "Pick one axis and commit to it for six months. A signature is a choice before it is a trait.",
+};
+
+const BALANCED_FILLER: Omit<InteractionReading, "strength"> = {
+  id: "balanced", label: "Balanced Elsewhere", axes: null,
+  framework: "Situational Strength — Mischel, 1977",
+  mechanism: "Outside the pairing above, your remaining axes sit close to the middle. That is range, not indecision: the pairing is your signature, the rest flexes to the room.",
+  edge: "One clear edge plus adaptability everywhere else is the profile most effective leaders actually have.",
+  risk: "The flexible axes are where you get talked out of things. Know which ones they are.",
+  move: "Name your flexible axes to one person who watches you work. Ask them where you bend most.",
+};
+
+/** Both axes must sit at least this far from neutral (in the rule's direction) for a rule to fire. */
+const INTERACTION_THRESHOLD = 8;
+
+export function interactionReadings(scores: AxisScores): InteractionReading[] {
+  const fired = INTERACTION_RULES
+    .map((rule) => {
+      const [a, b] = rule.axes;
+      const [da, db] = rule.dirs;
+      const sa = da === "high" ? scores[a] - 50 : 50 - scores[a];
+      const sb = db === "high" ? scores[b] - 50 : 50 - scores[b];
+      const qualifies = sa >= INTERACTION_THRESHOLD && sb >= INTERACTION_THRESHOLD;
+      const strength = qualifies ? Math.round(100 * Math.min(1, Math.sqrt((sa / 45) * (sb / 45)))) : 0;
+      return { rule, strength };
+    })
+    .filter((x) => x.strength > 0)
+    .sort((x, y) => y.strength - x.strength);
+
+  const out: InteractionReading[] = fired.slice(0, 2).map(({ rule, strength }) => {
+    const { dirs: _dirs, ...rest } = rule;
+    void _dirs;
+    return { ...rest, strength };
+  });
+  if (out.length === 0) out.push({ ...CHAMELEON_FILLER, strength: 0 });
+  if (out.length === 1) out.push({ ...BALANCED_FILLER, strength: 0 });
+  return out;
+}
+
+// ---------- Answer consistency (paired questions) ----------
+//
+// Eight pairs of questions probe the same construct from two angles. When a
+// respondent's two answers pull in opposite directions, that is not noise to
+// be averaged away: it is an if-then signature (Mischel & Shoda, 1995 —
+// Cognitive-Affective Personality System). Inconsistency indices of this kind
+// are standard in serious instruments (cf. VRIN, Tellegen, 1988). We surface
+// the pairs, name the axis they disagree on, and say what it usually means.
+
+export interface ContradictionPair {
+  id: string;
+  a: string;
+  b: string;
+  construct: string;
+}
+
+export const CONTRADICTION_PAIRS: ContradictionPair[] = [
+  { id: "power-basis", a: "q02", b: "q22", construct: "how your influence actually works" },
+  { id: "recognition", a: "q05", b: "q21", construct: "what recognition is for" },
+  { id: "threat-tempo", a: "q04", b: "q09", construct: "how you answer a threat" },
+  { id: "time-pressure", a: "q11", b: "q23", construct: "speed versus compounding" },
+  { id: "command-style", a: "q06", b: "q12", construct: "how you run a group" },
+  { id: "public-face", a: "q03", b: "q16", construct: "your public face" },
+  { id: "status-entry", a: "q01", b: "q06b", construct: "how you claim status" },
+  { id: "influence-mode", a: "q18", b: "q06c", construct: "how you change minds" },
+];
+
+export type PairAgreement = "contradiction" | "neutral" | "consistent";
+
+export interface PairReading {
+  pairId: string;
+  construct: string;
+  questionA: { id: string; prompt: string; optionText: string };
+  questionB: { id: string; prompt: string; optionText: string };
+  /** −100..100: direction agreement between the two chosen options. */
+  cosine: number;
+  agreement: PairAgreement;
+  /** The axis on which the two answers diverge most. */
+  axis: AxisId;
+  reading: string;
+}
+
+export interface ConsistencyResult {
+  pairs: PairReading[];
+  answered: number;
+  agreeing: number;
+  contradicting: number;
+  /** agreeing / answered as 0–100, or null if no pair was fully answered. */
+  index: number | null;
+}
+
+const CONTRADICTION_COPY: Record<AxisId, string> = {
+  control:
+    "In one scenario you take the wheel; in the other you hand it over. Control, for you, is situational: you command when the stakes are yours and defer when they are not. Ask which of the two the room you are in right now resembles.",
+  visibility:
+    "You want credit in one arena and anonymity in another. Many effective people run exactly this split: visible where reputation pays, invisible where it costs. Make the rule explicit so it stops looking like inconsistency to the people watching.",
+  timeHorizon:
+    "You will wait years in one situation and strike within hours in another. Tempo is your dial, not your trait. The risk is applying the wrong tempo out of habit; the edge is that opponents cannot predict which one they will get.",
+  powerSource:
+    "Force in one room, warmth in another. Most people default to one; you switch. That is either range or an unresolved question about which one is really you. Watch which you reach for when tired: that is the default.",
+};
+
+const CONTRADICTION_COS = -0.15;
+const CONSISTENT_COS = 0.15;
+
+export function evaluateContradictions(answers: { q: string; o: string }[]): ConsistencyResult {
+  const byId = new Map(answers.map((a) => [a.q, a.o]));
+  const pairs: PairReading[] = [];
+
+  for (const pair of CONTRADICTION_PAIRS) {
+    const qa = questions.find((q) => q.id === pair.a);
+    const qb = questions.find((q) => q.id === pair.b);
+    if (!qa || !qb || qa.kind === "free-text" || qa.kind === "email" || qb.kind === "free-text" || qb.kind === "email") continue;
+    const oa = byId.get(pair.a);
+    const ob = byId.get(pair.b);
+    if (!oa || !ob) continue;
+    const va = centredOptionVector(qa, oa);
+    const vb = centredOptionVector(qb, ob);
+    const optA = qa.options.find((o) => o.id === oa);
+    const optB = qb.options.find((o) => o.id === ob);
+    if (!va || !vb || !optA || !optB) continue;
+
+    const cos = cosine(va, vb);
+    const diffs = AXIS_ORDER.map((_, i) => Math.abs(va[i] - vb[i]));
+    const axis = AXIS_ORDER[diffs.indexOf(Math.max(...diffs))];
+    const agreement: PairAgreement = cos < CONTRADICTION_COS ? "contradiction" : cos > CONSISTENT_COS ? "consistent" : "neutral";
+    const reading =
+      agreement === "contradiction"
+        ? CONTRADICTION_COPY[axis]
+        : agreement === "consistent"
+          ? `Both answers pull the same way on ${axisLabels[axis]}. This part of your signature holds across situations, which is what makes it predictable to others.`
+          : `The two answers neither agree nor conflict on ${axisLabels[axis]}: one is a stronger version of the other. Read the sharper answer as the true one.`;
+
+    pairs.push({
+      pairId: pair.id,
+      construct: pair.construct,
+      questionA: { id: qa.id, prompt: qa.prompt, optionText: optA.text },
+      questionB: { id: qb.id, prompt: qb.prompt, optionText: optB.text },
+      cosine: Math.round(100 * cos),
+      agreement,
+      axis,
+      reading,
+    });
+  }
+
+  const rank = (p: PairReading) => (p.agreement === "contradiction" ? 0 : p.agreement === "neutral" ? 1 : 2);
+  pairs.sort((x, y) => rank(x) - rank(y) || x.cosine - y.cosine);
+
+  const answered = pairs.length;
+  const agreeing = pairs.filter((p) => p.agreement === "consistent").length;
+  const contradicting = pairs.filter((p) => p.agreement === "contradiction").length;
+  return { pairs, answered, agreeing, contradicting, index: answered ? Math.round((100 * agreeing) / answered) : null };
 }
 
 // ---------- Helpers ----------

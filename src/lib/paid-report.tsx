@@ -11,7 +11,7 @@ import {
   getRarityRank,
   type AxisId,
 } from "@/data/archetypes";
-import { perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves } from "@/lib/result-analysis";
+import { perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves, interactionReadings, evaluateContradictions } from "@/lib/result-analysis";
 import { matchArchetype, pqBreakdown, type ScoredAnswer } from "@/lib/scoring";
 import { questions, choiceQuestions } from "@/data/questions";
 
@@ -308,6 +308,8 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
   const scored: ScoredAnswer[] = answers.map((a) => ({ questionId: a.q, delta: a.d }));
   const breakdown = pqBreakdown(scores, scored);
   const answeredById = new Map(answers.map((a) => [a.q, a]));
+  const interactions = interactionReadings(scores);
+  const consistency = evaluateContradictions(answers.map((a) => ({ q: a.q, o: a.o })));
   const ampArch = getArchetypeById(archetype.pairings.amplifies.id);
   const drainArch = getArchetypeById(archetype.pairings.drains.id);
   const levelUp = levelUpMoves(scores);
@@ -349,7 +351,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <Text style={s.label}>Standard Profile Sheet</Text>
         <Text style={s.pageTitle}>Your numbers, in the same format as everyone else&apos;s.</Text>
         <Text style={s.body}>
-          Every PQ report carries this sheet with the same 24 variables in the same order. Put two reports side by side and the differences are the differences between the people — not between the documents.
+          Every PQ report carries this sheet with the same 25 variables in the same order. Put two reports side by side and the differences are the differences between the people — not between the documents.
         </Text>
         {(() => {
           const band = (v: number) => bandFor(v).toUpperCase();
@@ -363,6 +365,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             { k: "PQ (Signature Definition)", v: `${pq} / 100`, note: "0.5 × Extremity + 0.5 × Consistency" },
             { k: "Extremity", v: `${breakdown.extremity} / 100`, note: "Mean distance of the four axes from neutral" },
             { k: "Consistency", v: `${breakdown.consistency} / 100`, note: "% of answers pointing toward your archetype" },
+            { k: "Paired-question agreement", v: consistency.index === null ? "—" : `${consistency.agreeing} of ${consistency.answered} pairs`, note: "Same construct asked two ways; how often your answers agreed" },
             { k: "Control", v: `${scores.control} · ${band(scores.control)}` },
             { k: "Visibility", v: `${scores.visibility} · ${band(scores.visibility)}` },
             { k: "Time-Horizon", v: `${scores.timeHorizon} · ${band(scores.timeHorizon)}` },
@@ -488,7 +491,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <Text style={s.pageTitle}>What is in this report.</Text>
         <View style={{ marginTop: 6 }}>
           {[
-            { n: "—", title: "Standard Profile Sheet", sub: "24 fixed variables, identical layout in every report, for side-by-side comparison" },
+            { n: "—", title: "Standard Profile Sheet", sub: "25 fixed variables, identical layout in every report, for side-by-side comparison" },
             { n: "—", title: "Executive Summary", sub: "The one-page version: scorecard, top edge, top risk, one move" },
             { n: "I", title: "Methodology", sub: "How the assessment scores you" },
             { n: "II", title: "The Verdict", sub: "Your archetype, named and explained" },
@@ -500,10 +503,11 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             { n: "VIII", title: "How You Lose", sub: "The historical failure modes" },
             { n: "IX", title: "Power Pairings", sub: "Who amplifies you, who drains you" },
             { n: "X", title: "90-Day Roadmap", sub: "A tailored 3-phase plan" },
-            { n: "XI", title: "The Seven Laws", sub: "Imperatives specific to your archetype" },
-            { n: "XII", title: "Per-Question Analysis", sub: "Every choice you made and what it probed" },
-            { n: "XIII", title: "Hidden Edge & Closing", sub: "Your free-text in our analysis, plus a personal close" },
-            { n: "XIV", title: "Appendix", sub: "Glossary, frameworks, methodology footnotes" },
+            { n: "XI", title: "Interactions & Consistency", sub: "Where your axes meet; paired questions that agreed or disagreed" },
+            { n: "XII", title: "The Seven Laws", sub: "Imperatives specific to your archetype" },
+            { n: "XIII", title: "Per-Question Analysis", sub: "Every choice you made and what it probed" },
+            { n: "XIV", title: "Hidden Edge & Closing", sub: "Your free-text in our analysis, plus a personal close" },
+            { n: "XV", title: "Appendix", sub: "Glossary, frameworks, methodology footnotes" },
           ].map((row, i) => (
             <View key={i} style={{ flexDirection: "row", marginBottom: 9, paddingBottom: 9, borderBottom: "0.5px solid #EEE" }}>
               <Text style={{ fontFamily: "Playfair", fontWeight: 700, fontSize: 13, color: CRIMSON, width: 32 }}>{row.n}</Text>
@@ -909,6 +913,55 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <PageChrome docId={docId} watermark={watermark} />
       </Page>
 
+      {/* 13d. INTERACTIONS & CONSISTENCY — fixed two + two slots in every report */}
+      <Page size="LETTER" style={s.page}>
+        <Text style={s.label}>XI · Interactions &amp; Consistency</Text>
+        <Text style={s.pageTitle}>Where your axes meet. Where your answers disagree.</Text>
+        <Text style={s.body}>
+          An archetype is a combination, not a list of four numbers. The two pairings below are the strongest interactions in your profile, each with the mechanism behind it. Beneath them: pairs of questions that probe the same thing from two angles, and whether your answers agreed. Disagreement is not error. It is an if-then signature (Mischel &amp; Shoda, 1995): the situation decides which version of you shows up.
+        </Text>
+        {interactions.map((it, i) => (
+          <View key={it.id} wrap={false} style={{ marginBottom: 8, padding: 9, backgroundColor: PAPER, borderLeft: `2px solid ${it.axes ? AXIS_COLOR[it.axes[0]] : GOLD}` }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 1 }}>
+              <Text style={{ fontFamily: "Playfair", fontSize: 12.5, fontWeight: 700, color: INK }}>{i + 1}. {it.label}</Text>
+              <Text style={{ fontSize: 7.5, letterSpacing: 1, textTransform: "uppercase", color: SUB }}>
+                {it.axes ? `${axisLabels[it.axes[0]]} × ${axisLabels[it.axes[1]]} · ${it.strength}/100` : "Whole profile"}
+              </Text>
+            </View>
+            <Text style={{ fontSize: 7.5, color: GOLD, marginBottom: 3, letterSpacing: 0.5 }}>{it.framework}</Text>
+            <Text style={{ fontSize: 9.5, lineHeight: 1.45, color: INK, marginBottom: 2 }}>{it.mechanism}</Text>
+            <Text style={{ fontSize: 9, lineHeight: 1.4, color: SUB }}><Text style={{ fontWeight: 700, color: GOLD_LIGHT }}>Edge </Text>{it.edge}</Text>
+            <Text style={{ fontSize: 9, lineHeight: 1.4, color: SUB }}><Text style={{ fontWeight: 700, color: CRIMSON }}>Risk </Text>{it.risk}</Text>
+            <Text style={{ fontSize: 9, lineHeight: 1.4, color: SUB }}><Text style={{ fontWeight: 700, color: GOLD }}>Move </Text>{it.move}</Text>
+          </View>
+        ))}
+        <Text style={[s.sectionHeading, { marginTop: 8 }]}>
+          Answer consistency: {consistency.index === null ? "not enough paired answers" : `${consistency.agreeing} of ${consistency.answered} pairs agree`}
+        </Text>
+        {[0, 1].map((slot) => {
+          const p = consistency.pairs[slot];
+          if (!p) {
+            return (
+              <View key={`pair-empty-${slot}`} wrap={false} style={s.card}>
+                <Text style={s.cardLabel}>Pair {slot + 1}</Text>
+                <Text style={[s.cardQuote, { color: FAINT, fontStyle: "italic" }]}>No further paired questions were answered.</Text>
+              </View>
+            );
+          }
+          const tone = p.agreement === "contradiction" ? CRIMSON : p.agreement === "consistent" ? GOLD_LIGHT : GOLD;
+          const word = p.agreement === "contradiction" ? "Disagree" : p.agreement === "consistent" ? "Agree" : "Lean";
+          return (
+            <View key={p.pairId} wrap={false} style={[s.card, { borderLeft: `2px solid ${tone}`, paddingVertical: 8 }]}>
+              <Text style={[s.cardLabel, { color: tone }]}>{word} · {p.construct} · {axisLabels[p.axis]}</Text>
+              <Text style={[s.cardPrompt, { marginBottom: 2 }]}>{p.questionA.prompt} <Text style={{ color: INK, fontStyle: "normal" }}>&ldquo;{p.questionA.optionText}&rdquo;</Text></Text>
+              <Text style={[s.cardPrompt, { marginBottom: 3 }]}>{p.questionB.prompt} <Text style={{ color: INK, fontStyle: "normal" }}>&ldquo;{p.questionB.optionText}&rdquo;</Text></Text>
+              <Text style={{ fontSize: 9, lineHeight: 1.4, color: SUB }}>{p.reading}</Text>
+            </View>
+          );
+        })}
+        <PageChrome docId={docId} watermark={watermark} />
+      </Page>
+
       {/* 14. THE SEVEN LAWS */}
       <Page size="LETTER" style={s.page}>
         <Text style={s.label}>The Seven Laws</Text>
@@ -927,7 +980,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
 
       {/* 14b. PER-QUESTION ANALYSIS — every choice on one page */}
       <Page size="LETTER" style={s.page}>
-        <Text style={s.label}>XII · Per-Question Analysis</Text>
+        <Text style={s.label}>XIII · Per-Question Analysis</Text>
         <Text style={s.pageTitle}>Every choice. What it probed. Where it pulled.</Text>
         <Text style={s.body}>
           Below is the full audit trail of your scored answers. Each row names the research tradition the question maps to and the net axis impact of your choice. This is the data the engine ran your archetype on.
@@ -1004,7 +1057,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
 
       {/* 14c. APPENDIX — Glossary + frameworks list */}
       <Page size="LETTER" style={s.page}>
-        <Text style={s.label}>XIV · Appendix</Text>
+        <Text style={s.label}>XV · Appendix</Text>
         <Text style={s.pageTitle}>Glossary &amp; framework reference.</Text>
 
         <Text style={s.sectionHeading}>Axis glossary</Text>

@@ -5,9 +5,9 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: "*",
-        allow: ["/", "/quiz", "/privacy", "/terms"],
-        // Personal result pages and API routes must never be indexed.
-        disallow: ["/api/", "/results", "/paid"],
+        allow: ["/", "/quiz", "/archetypes", "/privacy", "/terms"],
+        // Personal result pages, API routes and the admin dashboard must never be indexed.
+        disallow: ["/api/", "/results", "/paid", "/admin"],
       },
     ],
     sitemap: "https://quiz.wayofgods.com/sitemap.xml",

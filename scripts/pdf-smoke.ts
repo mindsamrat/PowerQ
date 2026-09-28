@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 const outDir = tmpdir();
 import { writeFileSync } from "node:fs";
 import { renderPaidReport, type DbResponse } from "@/lib/paid-report";
+import { PAID_REPORT_PAGES } from "@/data/report-meta";
 import { choiceQuestions } from "@/data/questions";
 import { archetypes, getCentroid, type AxisId } from "@/data/archetypes";
 import { calculateAxisScores, matchArchetype, computePQ, type ScoredAnswer } from "@/lib/scoring";
@@ -43,6 +44,10 @@ async function run(label: string, archetypeId: string, p: number, tiebreakers: b
   const out = `${outDir}/${label}.pdf`;
   writeFileSync(out, pdf);
   console.log(label.padEnd(28), `-> ${match.archetype.id.padEnd(10)} fit=${match.fit} gap=${match.gap} pq=${row.pq_score}`, `pages=${pages}`, `${(pdf.length / 1024).toFixed(0)}KB`, `${Date.now() - t0}ms`, filename);
+  if (pages !== PAID_REPORT_PAGES) {
+    console.error(`PAGE COUNT MISMATCH for ${label}: rendered ${pages}, expected PAID_REPORT_PAGES=${PAID_REPORT_PAGES}. Either a page spilled or report-meta.ts needs updating.`);
+    process.exitCode = 1;
+  }
 }
 
 (async () => {

@@ -6,6 +6,8 @@ export interface StoredAnswer {
   q: string;
   o: string;
   d: AxisScores;
+  /** Displayed position (0–3), when recorded. */
+  pos?: number;
 }
 
 export interface SignatureAnswer {

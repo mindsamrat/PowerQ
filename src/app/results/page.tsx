@@ -19,14 +19,18 @@ import { matchArchetype, type AxisScores, type MatchResult } from "@/lib/scoring
 import {
   archetypeBlend,
   deriveReadings,
+  evaluateContradictions,
+  interactionReadings,
   perAxisAttribution,
   readConfidence,
   topArchetypes,
   type AxisAttribution,
   type BlendEntry,
   type ConfidenceReading,
+  type ConsistencyResult,
   type DerivedReading,
 } from "@/lib/result-analysis";
+import { PAID_REPORT_PAGES } from "@/data/report-meta";
 
 function clamp(raw: string | null, fallback = 50): number {
   if (!raw) return fallback;
@@ -217,6 +221,10 @@ function ResultsPage() {
         <Divider />
         <DerivedReadingsSection readings={readings} accent={archetype.cardAccent} />
         <Divider />
+        <InteractionsSection scores={scores} accent={archetype.cardAccent} />
+        <Divider />
+        <ConsistencySection accent={archetype.cardAccent} />
+        <Divider />
         <RecommendationsSection archetype={archetype} />
         <Divider />
         <EnemySection archetype={archetype} enemy={enemy} />
@@ -312,6 +320,13 @@ function RevealSection({ archetype, pq }: { archetype: Archetype; pq: number }) 
       <p className="text-text-muted/60 text-base md:text-lg italic font-[family-name:var(--font-heading)] reveal reveal-delay-2">
         {archetype.tagline}
       </p>
+      <Link
+        href={`/archetypes/${archetype.id}`}
+        className="inline-block mt-5 text-[11px] tracking-[0.2em] uppercase font-[family-name:var(--font-body)] transition-colors duration-300 hover:text-white reveal reveal-delay-2"
+        style={{ color: "rgba(201,168,76,0.8)" }}
+      >
+        Study {archetype.name} in depth →
+      </Link>
 
       <div className="mt-14 reveal reveal-delay-3">
         <p className="text-[10px] tracking-[0.3em] uppercase text-text-muted/40 mb-2 font-[family-name:var(--font-body)]">
@@ -408,6 +423,16 @@ function EnemySection({ archetype, enemy }: { archetype: Archetype; enemy: Arche
           you do not — and they see what you miss. Learn to spot them, or they will
           spot you first.
         </p>
+        <p className="text-text-muted/70 text-sm md:text-[15px] leading-[1.8] font-[family-name:var(--font-body)] mt-4">
+          {archetype.enemyTactics}
+        </p>
+        <Link
+          href={`/archetypes/${enemy.id}`}
+          className="inline-block mt-5 text-[11px] tracking-[0.2em] uppercase font-[family-name:var(--font-body)] transition-colors duration-300 hover:text-white"
+          style={{ color: "rgba(201,168,76,0.8)" }}
+        >
+          Study {enemy.name} →
+        </Link>
       </div>
     </section>
   );
@@ -473,9 +498,12 @@ function BlendSection({
         {top.map((entry) => (
           <div key={entry.id}>
             <div className="flex items-baseline justify-between mb-2">
-              <span className="font-[family-name:var(--font-heading)] text-base md:text-lg font-semibold text-text-primary">
+              <Link
+                href={`/archetypes/${entry.id}`}
+                className="font-[family-name:var(--font-heading)] text-base md:text-lg font-semibold text-text-primary hover:underline underline-offset-4 decoration-1"
+              >
                 {entry.name}
-              </span>
+              </Link>
               <span className="font-[family-name:var(--font-heading)] text-lg font-bold" style={{ color: accent }}>
                 {entry.percent}%
               </span>
@@ -614,6 +642,95 @@ function DerivedReadingsSection({
               <Reading label="Warning" body={r.warning} accent="#E8A85A" />
               <Reading label="Practice" body={r.practice} accent={accent} />
             </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function InteractionsSection({ scores, accent }: { scores: AxisScores; accent: string }) {
+  const readings = useMemo(() => interactionReadings(scores), [scores]);
+  return (
+    <section>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-text-muted/40 mb-2 text-center font-[family-name:var(--font-body)]">
+        Where Your Axes Meet
+      </p>
+      <p className="text-text-muted/45 text-xs italic font-[family-name:var(--font-body)] text-center mb-7 max-w-sm mx-auto">
+        An archetype is a combination, not four separate numbers. These are the two strongest pairings in your profile and the mechanism behind each.
+      </p>
+      <div className="flex flex-col gap-4">
+        {readings.map((r, i) => (
+          <div key={r.id} className="glass rounded-xl p-5 md:p-6 border-gradient">
+            <div className="flex items-baseline justify-between gap-3 mb-1">
+              <span className="font-[family-name:var(--font-heading)] text-lg font-bold text-text-primary">
+                {i + 1}. {r.label}
+              </span>
+              <span className="text-[10px] tracking-[0.15em] uppercase font-[family-name:var(--font-body)] font-semibold shrink-0" style={{ color: accent }}>
+                {r.axes ? `${axisLabels[r.axes[0]]} × ${axisLabels[r.axes[1]]}` : "Whole profile"}
+              </span>
+            </div>
+            <p className="text-text-muted/40 text-[10px] font-[family-name:var(--font-body)] mb-3">{r.framework}</p>
+            <p className="text-text-primary/85 text-sm font-[family-name:var(--font-body)] leading-[1.7] mb-4">{r.mechanism}</p>
+            <div className="space-y-3">
+              <Reading label="Edge" body={r.edge} accent="#9BBF7B" />
+              <Reading label="Risk" body={r.risk} accent="#E8A85A" />
+              <Reading label="Move" body={r.move} accent={accent} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ConsistencySection({ accent }: { accent: string }) {
+  const [result, setResult] = useState<ConsistencyResult | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("pq_answers_v1");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as StoredAnswer[];
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sessionStorage hydration on mount
+      setResult(evaluateContradictions(parsed));
+    } catch { /* ignore */ }
+  }, []);
+
+  if (!result || result.answered === 0) return null;
+  const shown = result.pairs.slice(0, 2);
+  const tone = (a: ConsistencyResult["pairs"][number]["agreement"]) =>
+    a === "contradiction" ? "#E8526A" : a === "consistent" ? "#9BBF7B" : "#E8A85A";
+  const word = (a: ConsistencyResult["pairs"][number]["agreement"]) =>
+    a === "contradiction" ? "Disagree" : a === "consistent" ? "Agree" : "Lean";
+
+  return (
+    <section>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-text-muted/40 mb-2 text-center font-[family-name:var(--font-body)]">
+        Answer Consistency
+      </p>
+      <p className="text-text-muted/45 text-xs italic font-[family-name:var(--font-body)] text-center mb-3 max-w-sm mx-auto">
+        Eight pairs of questions ask the same thing two ways. When your answers disagree, that is not noise: it is an if-then signature, the situation deciding which version of you shows up.
+      </p>
+      <p className="text-center font-[family-name:var(--font-heading)] text-xl font-bold text-text-primary mb-6">
+        {result.agreeing} of {result.answered} paired questions agree
+      </p>
+      <div className="flex flex-col gap-4">
+        {shown.map((p) => (
+          <div key={p.pairId} className="glass rounded-xl p-5 border-gradient" style={{ borderLeft: `2px solid ${tone(p.agreement)}` }}>
+            <div className="flex items-baseline justify-between gap-3 mb-3">
+              <span className="text-[10px] tracking-[0.2em] uppercase font-[family-name:var(--font-body)] font-semibold" style={{ color: tone(p.agreement) }}>
+                {word(p.agreement)} · {p.construct}
+              </span>
+              <span className="text-[10px] tracking-[0.15em] uppercase font-[family-name:var(--font-body)]" style={{ color: accent }}>
+                {axisLabels[p.axis]}
+              </span>
+            </div>
+            <p className="text-text-primary/60 text-xs italic font-[family-name:var(--font-body)] mb-1">{p.questionA.prompt}</p>
+            <p className="text-text-primary/95 text-sm font-[family-name:var(--font-body)] mb-3">&ldquo;{p.questionA.optionText}&rdquo;</p>
+            <p className="text-text-primary/60 text-xs italic font-[family-name:var(--font-body)] mb-1">{p.questionB.prompt}</p>
+            <p className="text-text-primary/95 text-sm font-[family-name:var(--font-body)] mb-3">&ldquo;{p.questionB.optionText}&rdquo;</p>
+            <p className="text-text-muted/75 text-sm font-[family-name:var(--font-body)] leading-[1.7]">{p.reading}</p>
           </div>
         ))}
       </div>
@@ -920,7 +1037,7 @@ function PaidUnlockCard({ archetype, saveStatus }: { archetype: Archetype; saveS
           Unlock your full analysis.
         </h3>
         <p className="text-text-muted/50 text-sm mb-8 font-[family-name:var(--font-body)] max-w-sm mx-auto">
-          A 25-page personalized report: {archetype.name} across love, money,
+          A {PAID_REPORT_PAGES}-page personalized report: {archetype.name} across love, money,
           leadership, enemies, and legacy. Quotes your actual answers, shows
           the numbers behind every score, and uses the same structure for
           everyone so you can compare with friends. Watermarked to your email.
@@ -1032,6 +1149,12 @@ function ComparisonSection({ archetype }: { archetype: Archetype }) {
           className="glass glass-hover text-text-primary/70 text-sm px-5 py-3 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)]"
         >
           Take it again
+        </Link>
+        <Link
+          href="/archetypes"
+          className="glass glass-hover text-text-primary/70 text-sm px-5 py-3 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)]"
+        >
+          Explore all 8 archetypes
         </Link>
       </div>
     </section>

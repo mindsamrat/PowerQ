@@ -5,6 +5,8 @@ export interface ChoiceAnswer {
   questionId: string;
   optionId: OptionId;
   delta: AnswerDelta;
+  /** Position (0–3) the option was displayed in. Options are shuffled per session; this lets us measure position bias later. */
+  pos?: number;
 }
 
 export interface FreeTextAnswer {

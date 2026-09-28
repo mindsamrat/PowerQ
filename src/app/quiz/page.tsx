@@ -38,6 +38,8 @@ interface StoredProgress {
   bankVersion: number;
   progress: QuizProgress;
   cursor: number;
+  /** Per-session shuffle seed so a resumed quiz shows options in the same order. */
+  seed: number;
 }
 
 function loadProgress(): StoredProgress | null {
@@ -51,7 +53,8 @@ function loadProgress(): StoredProgress | null {
       Date.now() - parsed.savedAt > STORAGE_MAX_AGE_MS ||
       parsed.bankVersion !== QUIZ_BANK_VERSION ||
       !parsed.progress ||
-      typeof parsed.cursor !== "number";
+      typeof parsed.cursor !== "number" ||
+      typeof parsed.seed !== "number";
     if (stale) {
       localStorage.removeItem(STORAGE_KEY);
       return null;
@@ -62,12 +65,49 @@ function loadProgress(): StoredProgress | null {
   }
 }
 
-function saveProgress(progress: QuizProgress, cursor: number) {
+function saveProgress(progress: QuizProgress, cursor: number, seed: number) {
   if (typeof window === "undefined") return;
   try {
-    const payload: StoredProgress = { savedAt: Date.now(), bankVersion: QUIZ_BANK_VERSION, progress, cursor };
+    const payload: StoredProgress = { savedAt: Date.now(), bankVersion: QUIZ_BANK_VERSION, progress, cursor, seed };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch { /* ignore */ }
+}
+
+// ---------- Option-order randomisation ----------
+//
+// People pick the first option more often than chance (position bias), so the
+// display order of each question's four options is shuffled per session. The
+// shuffle is deterministic from (seed, questionId), so resuming a saved quiz
+// shows the same order. Scoring uses option ids and is unaffected; the
+// displayed position is recorded so the bias can be measured later.
+
+function newSeed(): number {
+  return ((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0) || 1;
+}
+
+function hashSeed(seed: number, key: string): number {
+  let h = (seed ^ 0x9e3779b9) >>> 0;
+  for (let i = 0; i < key.length; i += 1) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193) >>> 0;
+  return h;
+}
+
+/** Returns option indices in display order. Seed 0 = bank order (pre-hydration). */
+function optionOrder(seed: number, questionId: string): number[] {
+  const arr = [0, 1, 2, 3];
+  if (!seed) return arr;
+  let s = hashSeed(seed, questionId);
+  const rand = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rand() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
 }
 
 function clearProgress() {
@@ -83,6 +123,9 @@ export default function QuizPage() {
   const [transitioning, setTransitioning] = useState(false);
   const [visible, setVisible] = useState(true);
   const [hydrated, setHydrated] = useState(false);
+  // 0 until hydration so server and client render identical markup; a real
+  // seed is chosen (or restored) on the client before the first question shows.
+  const [seed, setSeed] = useState(0);
 
   useEffect(() => {
     const saved = loadProgress();
@@ -90,14 +133,17 @@ export default function QuizPage() {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage hydration on mount
       setProgress(saved.progress);
       setCursor(saved.cursor);
+      setSeed(saved.seed);
+    } else {
+      setSeed(newSeed());
     }
     setHydrated(true);
   }, [plan.length]);
 
   useEffect(() => {
     if (!hydrated) return;
-    if (cursor > 0 && cursor < plan.length) saveProgress(progress, cursor);
-  }, [progress, cursor, plan.length, hydrated]);
+    if (cursor > 0 && cursor < plan.length) saveProgress(progress, cursor, seed);
+  }, [progress, cursor, plan.length, hydrated, seed]);
 
   const advance = useCallback(
     (nextProgress: QuizProgress) => {
@@ -127,6 +173,7 @@ export default function QuizPage() {
                 q: a.questionId,
                 o: a.optionId,
                 d: a.delta,
+                pos: a.pos,
               }))
             )
           );
@@ -146,12 +193,13 @@ export default function QuizPage() {
   );
 
   const handleChoice = useCallback(
-    (question: ChoiceQuestion, optionId: OptionId) => {
+    (question: ChoiceQuestion, optionId: OptionId, pos?: number) => {
       if (transitioning) return;
       const answer: ChoiceAnswer = {
         questionId: question.id,
         optionId,
         delta: deltaFromChoice(question, optionId),
+        ...(pos !== undefined ? { pos } : {}),
       };
       advance({
         served: [...progress.served, question.id],
@@ -186,7 +234,7 @@ export default function QuizPage() {
         archetypeId: finalResult.match.archetype.id,
         scores: finalResult.scores,
         pq: finalResult.pq,
-        answers: progress.choiceAnswers.map((a) => ({ q: a.questionId, o: a.optionId, d: a.delta })),
+        answers: progress.choiceAnswers.map((a) => ({ q: a.questionId, o: a.optionId, d: a.delta, pos: a.pos })),
         freeText: progress.freeTextAnswers,
         source: "free-pdf" as const,
       };
@@ -279,15 +327,18 @@ export default function QuizPage() {
   const progressPct = (step / total) * 100;
 
   useEffect(() => {
-    if (!current || current.kind === "free-text" || current.kind === "email") return;
-    const map: Record<string, OptionId> = { "1": "a", "2": "b", "3": "c", "4": "d" };
+    if (!hydrated || !current || current.kind === "free-text" || current.kind === "email") return;
+    const order = optionOrder(seed, current.id);
     const handler = (e: KeyboardEvent) => {
-      const id = map[e.key];
-      if (id) handleChoice(current, id);
+      const n = Number.parseInt(e.key, 10);
+      if (n >= 1 && n <= 4) {
+        const displayIndex = n - 1;
+        handleChoice(current, current.options[order[displayIndex]].id, displayIndex);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [current, handleChoice]);
+  }, [current, handleChoice, hydrated, seed]);
 
   return (
     <main className="min-h-screen bg-primary-bg bg-gradient-animate flex flex-col relative grain">
@@ -321,7 +372,7 @@ export default function QuizPage() {
               visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"
             }`}
           >
-            {current.kind === "free-text" ? (
+            {!hydrated ? null : current.kind === "free-text" ? (
               <FreeTextStep
                 key={current.id}
                 question={current}
@@ -338,8 +389,9 @@ export default function QuizPage() {
               <ChoiceStep
                 key={current.id}
                 question={current}
+                order={optionOrder(seed, current.id)}
                 disabled={transitioning}
-                onChoose={(id) => handleChoice(current, id)}
+                onChoose={(id, pos) => handleChoice(current, id, pos)}
               />
             )}
           </div>
@@ -357,12 +409,15 @@ export default function QuizPage() {
 
 function ChoiceStep({
   question,
+  order,
   disabled,
   onChoose,
 }: {
   question: ChoiceQuestion;
+  /** Indices into question.options, in display order. */
+  order: number[];
   disabled: boolean;
-  onChoose: (id: OptionId) => void;
+  onChoose: (id: OptionId, pos: number) => void;
 }) {
   return (
     <>
@@ -370,23 +425,26 @@ function ChoiceStep({
         {question.prompt}
       </h2>
       <div className="space-y-3 stagger-children">
-        {question.options.map((option, i) => (
-          <button
-            key={option.id}
-            onClick={() => onChoose(option.id)}
-            disabled={disabled}
-            className="w-full text-left p-4 md:p-5 rounded-xl glass option-card cursor-pointer"
-          >
-            <div className="flex items-start gap-4">
-              <span className="text-[10px] text-accent/60 font-[family-name:var(--font-body)] mt-1 shrink-0 w-4 tracking-wider">
-                {String.fromCharCode(65 + i)}
-              </span>
-              <span className="text-sm md:text-[15px] text-text-primary/90 font-[family-name:var(--font-body)] leading-relaxed">
-                {option.text}
-              </span>
-            </div>
-          </button>
-        ))}
+        {order.map((optionIndex, pos) => {
+          const option = question.options[optionIndex];
+          return (
+            <button
+              key={option.id}
+              onClick={() => onChoose(option.id, pos)}
+              disabled={disabled}
+              className="w-full text-left p-4 md:p-5 rounded-xl glass option-card cursor-pointer"
+            >
+              <div className="flex items-start gap-4">
+                <span className="text-[10px] text-accent/60 font-[family-name:var(--font-body)] mt-1 shrink-0 w-4 tracking-wider">
+                  {String.fromCharCode(65 + pos)}
+                </span>
+                <span className="text-sm md:text-[15px] text-text-primary/90 font-[family-name:var(--font-body)] leading-relaxed">
+                  {option.text}
+                </span>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </>
   );

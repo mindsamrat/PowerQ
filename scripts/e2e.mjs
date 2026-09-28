@@ -110,6 +110,9 @@ ok(resultsText.includes("Sovereign Doctrine"), "Sovereign Doctrine CTA present")
 ok(resultsText.includes("How Each Axis Was Built"), "per-axis attribution rendered from sessionStorage answers");
 ok(resultsText.includes("Why You Got"), "signature answers rendered");
 ok(!resultsText.includes("ConvertKit"), "no stale ConvertKit copy");
+ok(/Where Your Axes Meet/i.test(resultsText), "axis-interaction readings rendered");
+ok(/paired questions agree/i.test(resultsText), "paired-question consistency rendered");
+ok(/Study The \w+ in depth/i.test(resultsText), "results links to the archetype study page");
 await page.screenshot({ path: `${OUT}/04-results-top.png` });
 await page.screenshot({ path: `${OUT}/05-results-full.png`, fullPage: true });
 
@@ -189,6 +192,35 @@ r = await ctx.request.get(`${BASE}/sitemap.xml`);
 ok(r.status() === 200, "sitemap.xml 200");
 r = await ctx.request.get(`${BASE}/this-does-not-exist`);
 ok(r.status() === 404 && (await r.text()).includes("This room does not exist"), "custom 404 page");
+
+// ---------- Archetype study pages ----------
+r = await ctx.request.get(`${BASE}/archetypes`);
+{
+  const t = await r.text();
+  const names = ["The Sovereign", "The Shadow", "The Architect", "The Oracle", "The Blade", "The Diplomat", "The Hunter", "The Flame"];
+  ok(r.status() === 200 && names.every((nm) => t.includes(nm)), "archetype index lists all eight");
+}
+r = await ctx.request.get(`${BASE}/archetypes/blade`);
+{
+  const t = await r.text();
+  ok(r.status() === 200 && /Natural enemy/i.test(t) && /seven laws/i.test(t) && /Answers that point here/i.test(t), "archetype detail page renders its sections");
+  ok(t.includes("/archetypes/architect"), "archetype page links to its natural enemy");
+  ok(t.includes("/book?from=archetype&amp;archetype=blade") || t.includes("/book?from=archetype&archetype=blade"), "archetype page carries the book CTA");
+}
+r = await ctx.request.get(`${BASE}/archetypes/nonsense`);
+ok(r.status() === 404, "unknown archetype -> 404");
+r = await ctx.request.get(`${BASE}/sitemap.xml`);
+ok((await r.text()).includes("/archetypes/flame"), "sitemap includes archetype pages");
+
+// ---------- Admin dashboard gating ----------
+r = await ctx.request.get(`${BASE}/admin/psychometrics`);
+ok(r.status() === 404, "psychometrics without token is hidden (404)");
+r = await ctx.request.get(`${BASE}/admin/psychometrics?token=wrong`);
+ok(r.status() === 404, "psychometrics with wrong token is hidden (404)");
+if (process.env.ADMIN_TOKEN) {
+  r = await ctx.request.get(`${BASE}/admin/psychometrics?token=${encodeURIComponent(process.env.ADMIN_TOKEN)}`);
+  ok(r.status() === 200 && (await r.text()).includes("Psychometrics"), "psychometrics with correct token renders");
+}
 r = await ctx.request.get(`${BASE}/`);
 const h = r.headers();
 ok(h["x-content-type-options"] === "nosniff" && !!h["x-frame-options"], "security headers present");

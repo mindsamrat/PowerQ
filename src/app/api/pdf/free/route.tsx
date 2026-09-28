@@ -13,6 +13,7 @@ import {
 } from "@/data/archetypes";
 import { matchArchetype } from "@/lib/scoring";
 import { readConfidence } from "@/lib/result-analysis";
+import { PAID_REPORT_PAGES } from "@/data/report-meta";
 
 export const runtime = "nodejs";
 
@@ -188,7 +189,7 @@ export async function GET(req: Request) {
         <Text style={styles.label}>Next</Text>
         <Text style={styles.heading}>The Full Report</Text>
         <Text style={styles.body}>
-          The paid PQ Report is 25 pages of personalized analysis: how {archetype.name} operates in love,
+          The paid PQ Report is {PAID_REPORT_PAGES} pages of personalized analysis: how {archetype.name} operates in love,
           money, work, conflict, and legacy. Seven laws specific to your archetype. Three failure modes
           and the early warning signs of each. Your Hidden Edge — the quality most people underestimate
           about you, reframed as leverage.

@@ -222,6 +222,15 @@ export default function LandingPage() {
             </p>
           </div>
           <ArchetypeOrbital />
+          <div className="text-center mt-2 mb-6">
+            <Link
+              href="/archetypes"
+              className="inline-block text-xs tracking-[0.2em] uppercase font-[family-name:var(--font-body)] transition-colors duration-300 hover:text-white"
+              style={{ color: "rgba(201,168,76,0.8)" }}
+            >
+              Study each archetype in depth →
+            </Link>
+          </div>
         </section>
 
         {/* Footer */}

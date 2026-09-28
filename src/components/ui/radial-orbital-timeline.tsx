@@ -15,6 +15,8 @@ export interface TimelineItem {
   relatedIds: number[];
   status: "completed" | "in-progress" | "pending";
   energy: number;
+  /** Optional link to a full profile page, rendered at the foot of the card. */
+  href?: string;
 }
 
 interface RadialOrbitalTimelineProps {
@@ -248,6 +250,16 @@ export default function RadialOrbitalTimeline({
                             })}
                           </div>
                         </div>
+                      )}
+
+                      {item.href && (
+                        <a
+                          href={item.href}
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-4 flex items-center justify-center text-[11px] uppercase tracking-wider py-1.5 border transition-colors text-amber-300/90 hover:text-amber-200 border-white/15 hover:border-amber-300/40"
+                        >
+                          Full profile <ArrowRight size={10} className="ml-1" />
+                        </a>
                       )}
                     </CardContent>
                   </Card>

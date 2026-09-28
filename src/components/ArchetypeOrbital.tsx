@@ -49,6 +49,7 @@ export default function ArchetypeOrbital() {
       relatedIds: [idFor(a.enemyId)],
       status: "completed",
       energy: Math.round(((20 - a.rarity) / 14) * 60 + 40), // rarer = more energy, 40-100
+      href: `/archetypes/${slug}`,
     };
   });
 
