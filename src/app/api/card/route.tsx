@@ -4,6 +4,20 @@ import { join } from "node:path";
 import { archetypes, axisLabels, getArchetypeById, type AxisId } from "@/data/archetypes";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
+
+// Read once per instance instead of on every request.
+let fontsPromise: Promise<[Buffer, Buffer]> | null = null;
+function loadFonts() {
+  fontsPromise ??= Promise.all([
+    readFile(join(process.cwd(), "node_modules/@fontsource/playfair-display/files/playfair-display-latin-700-normal.woff")),
+    readFile(join(process.cwd(), "node_modules/@fontsource/dm-sans/files/dm-sans-latin-400-normal.woff")),
+  ]).catch((err) => {
+    fontsPromise = null;
+    throw err;
+  });
+  return fontsPromise;
+}
 
 const WIDTH = 1080;
 const HEIGHT = 1920;
@@ -29,10 +43,7 @@ export async function GET(req: Request) {
 
   const accent = archetype.cardAccent;
 
-  const [playfair, dmSans] = await Promise.all([
-    readFile(join(process.cwd(), "node_modules/@fontsource/playfair-display/files/playfair-display-latin-700-normal.woff")),
-    readFile(join(process.cwd(), "node_modules/@fontsource/dm-sans/files/dm-sans-latin-400-normal.woff")),
-  ]);
+  const [playfair, dmSans] = await loadFonts();
 
   return new ImageResponse(
     (
@@ -93,13 +104,13 @@ export async function GET(req: Request) {
               border: `3px solid ${accent}`,
             }}
           >
-            <div style={{ display: "flex", fontSize: 26, color: accent, letterSpacing: 4, textTransform: "uppercase" }}>Rarity</div>
+            <div style={{ display: "flex", fontSize: 26, color: accent, letterSpacing: 4, textTransform: "uppercase" }}>Est. rarity</div>
             <div style={{ display: "flex", fontFamily: "Playfair", fontSize: 96, fontWeight: 700, color: "#FFFFFF", lineHeight: 1, marginTop: 6 }}>
               {archetype.rarity}%
             </div>
           </div>
           <div style={{ display: "flex", fontSize: 22, color: "#888888", letterSpacing: 4, textTransform: "uppercase", marginTop: 24 }}>
-            of all assessed
+            of respondents
           </div>
         </div>
 
@@ -112,6 +123,8 @@ export async function GET(req: Request) {
     {
       width: WIDTH,
       height: HEIGHT,
+      // The image depends only on the clamped query string; let the CDN serve repeats.
+      headers: { "Cache-Control": "public, max-age=86400, s-maxage=2592000, immutable" },
       fonts: [
         { name: "Playfair", data: playfair, weight: 700, style: "normal" },
         { name: "DM Sans", data: dmSans, weight: 400, style: "normal" },

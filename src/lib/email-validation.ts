@@ -60,14 +60,14 @@ async function lookup<T>(fn: () => Promise<T[]>): Promise<LookupResult> {
   }
 }
 
-/** Does the domain accept mail? MX first, then A/AAAA per RFC 5321 §5.1. */
+/** Does the domain accept mail? MX, or A/AAAA per RFC 5321 §5.1. Lookups run in parallel. */
 async function domainResolves(domain: string): Promise<LookupResult> {
-  const mx = await lookup(() => dns.resolveMx(domain));
-  if (mx.found) return mx;
-  const a = await lookup(() => dns.resolve4(domain));
-  if (a.found) return a;
-  const aaaa = await lookup(() => dns.resolve6(domain));
-  if (aaaa.found) return aaaa;
+  const [mx, a, aaaa] = await Promise.all([
+    lookup(() => dns.resolveMx(domain)),
+    lookup(() => dns.resolve4(domain)),
+    lookup(() => dns.resolve6(domain)),
+  ]);
+  if (mx.found || a.found || aaaa.found) return { found: true, definitiveMiss: false };
   return { found: false, definitiveMiss: mx.definitiveMiss && a.definitiveMiss && aaaa.definitiveMiss };
 }
 

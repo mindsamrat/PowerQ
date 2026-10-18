@@ -1,209 +1,156 @@
 import { NextResponse } from "next/server";
-import { getResponseById } from "@/lib/supabase-server";
+import { isResponseId, lookupResponse, shortId } from "@/lib/supabase-server";
+import { createWindowLimiter, dodoConfig, readJsonBody, rejectCrossSite } from "@/lib/http";
 import { getClientIp } from "@/lib/rate-limit";
 
-const CHECKOUT_PER_IP_PER_HOUR = 10;
-const CHECKOUT_WINDOW_MS = 60 * 60 * 1000;
-// In-memory checkout counter. Adequate because Vercel keeps lambda instances
-// warm for minutes at a time and the limit is generous; serious abusers also
-// hit the per-IP quiz-submission limit which is database-backed.
-const checkoutBuckets = new Map<string, { count: number; resetAt: number }>();
-
-function bumpCheckoutCount(ip: string): { allowed: boolean; resetAt: number } {
-  const now = Date.now();
-  const existing = checkoutBuckets.get(ip);
-  if (!existing || existing.resetAt < now) {
-    const fresh = { count: 1, resetAt: now + CHECKOUT_WINDOW_MS };
-    checkoutBuckets.set(ip, fresh);
-    return { allowed: true, resetAt: fresh.resetAt };
-  }
-  existing.count += 1;
-  return {
-    allowed: existing.count <= CHECKOUT_PER_IP_PER_HOUR,
-    resetAt: existing.resetAt,
-  };
-}
-
 export const runtime = "nodejs";
-
-interface CheckoutRequest {
-  responseId: string;
-}
+export const maxDuration = 30;
 
 /**
- * Creates a Dodo Payments checkout session for the $3 PQ Full Report.
+ * Creates a Dodo Payments hosted checkout for the paid PQ report.
  *
- * Required env vars:
- *   DODO_API_KEY        - Bearer token from Dodo dashboard
- *   DODO_PRODUCT_ID     - the pdt_... id of the $3 product
- *   DODO_API_BASE       - https://live.dodopayments.com OR https://test.dodopayments.com
- *                         (defaults to live)
+ * Env: DODO_API_KEY, DODO_PRODUCT_ID, optional DODO_API_BASE
+ * (https://test.dodopayments.com for test mode; defaults to live).
  *
- * Flow:
- *   1. Client POSTs { responseId } from /results
- *   2. We look up the response in Supabase to get the user's email
- *   3. We call Dodo to create a payment session, attaching response_id in
- *      metadata so the webhook can correlate the payment back to the row
- *   4. Return the hosted-checkout URL; client navigates the browser to it
+ * Flow: client POSTs { responseId } -> we confirm the row exists and is unpaid
+ * -> create a Dodo payment link with metadata.response_id -> client navigates
+ * to it. Fulfilment happens in the webhook (and /api/payments/verify).
  */
+
+// Per-instance throttles. Per response stops one leaked id from minting
+// unlimited sessions; per network is generous because of carrier NAT.
+const perResponse = createWindowLimiter(10, 60 * 60 * 1000);
+const perNetwork = createWindowLimiter(60, 60 * 60 * 1000);
+
+const DODO_TIMEOUT_MS = 15000;
+
 export async function POST(req: Request) {
   try {
     return await handleCheckout(req);
   } catch (err) {
-    console.error("[checkout-dodo] uncaught", err);
-    return NextResponse.json(
-      { error: "Unexpected server error. Please try again in a moment." },
-      { status: 500 }
-    );
+    console.error("[checkout] unexpected error:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Checkout is unavailable right now. Please try again in a moment." }, { status: 500 });
   }
 }
 
+function customerName(stored: unknown, email: string): string {
+  const name = typeof stored === "string" ? stored.trim().slice(0, 60) : "";
+  if (name.length >= 2) return name;
+  const derived = (email.split("@")[0] ?? "")
+    .replace(/[._\-+]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(" ");
+  return derived || "Customer";
+}
+
+/** Two-letter country from Vercel's geo header, used so Dodo can offer local tax/currency/methods. */
+function buyerCountry(req: Request): string | null {
+  const c = (req.headers.get("x-vercel-ip-country") ?? "").trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(c) ? c : null;
+}
+
+async function createDodoPayment(apiBase: string, apiKey: string, payload: unknown): Promise<{ status: number; data: Record<string, unknown> }> {
+  const res = await fetch(`${apiBase}/payments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(DODO_TIMEOUT_MS),
+  });
+  const text = await res.text();
+  let data: Record<string, unknown> = {};
+  try { data = JSON.parse(text) as Record<string, unknown>; } catch { /* non-JSON error page */ }
+  return { status: res.status, data };
+}
+
 async function handleCheckout(req: Request) {
-  const apiKey = process.env.DODO_API_KEY;
-  const productId = process.env.DODO_PRODUCT_ID;
-  const apiBase = process.env.DODO_API_BASE ?? "https://live.dodopayments.com";
+  const refused = rejectCrossSite(req);
+  if (refused) return refused;
 
+  const { apiKey, productId, apiBase } = dodoConfig();
   if (!apiKey || !productId) {
-    return NextResponse.json(
-      { error: "Payments aren't configured yet. Try again shortly." },
-      { status: 503 }
-    );
+    console.error("[checkout] DODO_API_KEY or DODO_PRODUCT_ID is not set");
+    return NextResponse.json({ error: "Payments aren't configured yet. Try again shortly." }, { status: 503 });
   }
 
-  let body: Partial<CheckoutRequest>;
-  try {
-    body = (await req.json()) as Partial<CheckoutRequest>;
-  } catch {
-    return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+  const parsed = await readJsonBody(req, 2048);
+  if ("error" in parsed) return parsed.error;
+  const responseId = parsed.body.responseId;
+  if (!isResponseId(responseId)) {
+    return NextResponse.json({ error: "We couldn't find your saved result. Retake the assessment to unlock the report." }, { status: 400 });
   }
 
-  const responseId = body.responseId;
-  if (!responseId || typeof responseId !== "string") {
-    return NextResponse.json({ error: "Missing responseId." }, { status: 400 });
-  }
-
-  // Per-IP rate limit so a leaked responseId can't be used to spam checkout
-  // sessions (which would otherwise charge nothing but exhaust quotas).
   const ip = getClientIp(req);
-  if (ip) {
-    const { allowed, resetAt } = bumpCheckoutCount(ip);
-    if (!allowed) {
-      const retryAfter = Math.ceil((resetAt - Date.now()) / 1000);
-      return NextResponse.json(
-        { error: "Too many checkout attempts. Try again in an hour." },
-        { status: 429, headers: { "Retry-After": String(Math.max(retryAfter, 60)) } }
-      );
-    }
-  }
-
-  const response = await getResponseById(responseId);
-  if (!response) {
+  if (!perResponse(responseId) || (ip && !perNetwork(ip))) {
     return NextResponse.json(
-      { error: "Quiz response not found. Please retake the quiz." },
-      { status: 404 }
+      { error: "Too many checkout attempts. Wait a few minutes and try again." },
+      { status: 429, headers: { "Retry-After": "600" } }
     );
   }
 
-  // Idempotency: if already paid, don't issue another payment session — point
-  // the user at /paid so they download the existing PDF instead.
-  if (response.payment_status === "paid") {
-    const origin = new URL(req.url).origin;
-    return NextResponse.json({
-      ok: true,
-      checkoutUrl: `${origin}/paid?response_id=${encodeURIComponent(responseId)}`,
-      paymentId: null,
-      alreadyPaid: true,
-    });
+  const lookup = await lookupResponse(responseId, "id, name, email, payment_status");
+  if (lookup.status === "missing") {
+    return NextResponse.json({ error: "We couldn't find your saved result. Retake the assessment to unlock the report." }, { status: 404 });
   }
+  if (lookup.status !== "ok") {
+    return NextResponse.json(
+      { error: "Our database is waking up. Try again in a minute — nothing has been charged." },
+      { status: 503, headers: { "Retry-After": "30" } }
+    );
+  }
+  const row = lookup.row;
 
   const origin = new URL(req.url).origin;
   const returnUrl = `${origin}/paid?response_id=${encodeURIComponent(responseId)}`;
 
-  // Dodo's payments endpoint (one-time). Field names below match the
-  // public Dodo API; if your dashboard surface uses different names,
-  // these are the only places to adjust.
-  // Dodo's CustomerRequest is an untagged enum: either { customer_id } for
-  // an existing customer, or { email, name, [phone_number] } to create a new
-  // one. Email-only is rejected. Prefer the name the respondent typed on the
-  // final quiz step; fall back to a display name derived from the email.
-  const localPart = response.email.split("@")[0] ?? "Customer";
-  const derivedName = localPart
-    .replace(/[._-]+/g, " ")
-    .split(" ")
-    .filter(Boolean)
-    .map((w: string) => w[0].toUpperCase() + w.slice(1))
-    .join(" ") || "Customer";
-  const storedName = typeof response.name === "string" ? response.name.trim() : "";
-  const customerName = storedName.length >= 2 ? storedName.slice(0, 60) : derivedName;
+  // Idempotency: never sell the same report twice.
+  if (row.payment_status === "paid") {
+    return NextResponse.json({ ok: true, checkoutUrl: returnUrl, alreadyPaid: true });
+  }
 
-  const dodoPayload = {
+  // Dodo's CustomerRequest needs { email, name } for a new customer. Billing
+  // fields are required by this endpoint; the country drives tax, currency and
+  // local payment methods (UPI for India), so it comes from the buyer's
+  // location, not a placeholder.
+  const basePayload = {
     payment_link: true,
     product_cart: [{ product_id: productId, quantity: 1 }],
-    customer: {
-      email: response.email,
-      name: customerName,
-    },
-    billing: {
-      country: "US",
-      city: "N/A",
-      state: "N/A",
-      street: "N/A",
-      zipcode: "00000",
-    },
+    customer: { email: row.email, name: customerName(row.name, row.email) },
     return_url: returnUrl,
-    metadata: {
-      response_id: responseId,
-      archetype_id: response.archetype_id,
-      pq_score: String(response.pq_score),
-    },
+    // Only the reference needed to fulfil. No scores or profile data leave us.
+    metadata: { response_id: responseId },
   };
+  const billingFor = (country: string) => ({ country, city: "N/A", state: "N/A", street: "N/A", zipcode: "00000" });
 
-  let dodoRes: Response;
+  const country = buyerCountry(req);
+  let result: { status: number; data: Record<string, unknown> };
   try {
-    dodoRes = await fetch(`${apiBase}/payments`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(dodoPayload),
-    });
+    result = await createDodoPayment(apiBase, apiKey, { ...basePayload, billing: billingFor(country ?? "US") });
+    // If Dodo rejects the local country with placeholder address fields, fall
+    // back to the configuration that is known to work rather than losing the sale.
+    if (result.status === 422 && country && country !== "US") {
+      console.warn(`[checkout] Dodo rejected billing country ${country}; retrying with US`);
+      result = await createDodoPayment(apiBase, apiKey, { ...basePayload, billing: billingFor("US") });
+    }
   } catch (err) {
-    console.error("[checkout-dodo] network error", err);
-    return NextResponse.json(
-      { error: "Could not reach payment processor. Try again." },
-      { status: 502 }
-    );
+    console.error("[checkout] could not reach Dodo:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Could not reach the payment processor. Try again in a moment." }, { status: 502 });
   }
 
-  const dodoText = await dodoRes.text();
-  let dodoData: { payment_link?: string; checkout_url?: string; url?: string; payment_id?: string; id?: string; message?: string } = {};
-  try { dodoData = JSON.parse(dodoText); } catch { /* keep raw */ }
-
-  if (!dodoRes.ok) {
-    console.error("[checkout-dodo] Dodo error", dodoRes.status, dodoText);
-    return NextResponse.json(
-      { error: dodoData.message ?? "Payment session could not be created." },
-      { status: 502 }
-    );
+  if (result.status < 200 || result.status >= 300) {
+    // Log the status and Dodo's short message only (the body can echo customer details).
+    const message = typeof result.data.message === "string" ? result.data.message.slice(0, 200) : "";
+    console.error(`[checkout] Dodo error ${result.status} for ${shortId(responseId)}: ${message}`);
+    return NextResponse.json({ error: "The payment page could not be opened. Please try again in a moment." }, { status: 502 });
   }
 
-  // Dodo's response shape varies slightly across API versions; pick the first
-  // url-shaped field we recognise.
-  const checkoutUrl =
-    dodoData.payment_link ?? dodoData.checkout_url ?? dodoData.url ?? null;
-
-  if (!checkoutUrl) {
-    console.error("[checkout-dodo] no checkout url in Dodo response", dodoData);
-    return NextResponse.json(
-      { error: "Payment session created but no redirect URL returned." },
-      { status: 502 }
-    );
+  const pick = (k: string) => (typeof result.data[k] === "string" ? (result.data[k] as string) : null);
+  const checkoutUrl = pick("payment_link") ?? pick("checkout_url") ?? pick("url");
+  if (!checkoutUrl || !/^https:\/\//.test(checkoutUrl)) {
+    console.error(`[checkout] Dodo returned no usable checkout URL for ${shortId(responseId)}`);
+    return NextResponse.json({ error: "The payment page could not be opened. Please try again in a moment." }, { status: 502 });
   }
 
-  return NextResponse.json({
-    ok: true,
-    checkoutUrl,
-    paymentId: dodoData.payment_id ?? dodoData.id ?? null,
-  });
+  return NextResponse.json({ ok: true, checkoutUrl, paymentId: pick("payment_id") ?? pick("id") });
 }

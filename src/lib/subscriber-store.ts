@@ -1,69 +1,27 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-export interface SubscriberRecord {
-  id: string;
-  email: string;
-  archetypeId: string;
-  scores: { control: number; visibility: number; timeHorizon: number; powerSource: number };
-  pq: number;
-  createdAt: string;
-  userAgent?: string | null;
-  referrer?: string | null;
-  source: "free-pdf" | "paid-pdf";
+/**
+ * LOCAL DEVELOPMENT ONLY. When Supabase env vars are absent on a developer
+ * machine, completions are appended to an NDJSON file in the OS temp dir so
+ * the flow can be exercised end to end. Production never uses this: a missing
+ * Supabase config in production is treated as an outage (degraded result,
+ * loud log), not as a reason to invent a response id.
+ */
+export function isProductionRuntime(): boolean {
+  return process.env.VERCEL_ENV === "production" || (process.env.NODE_ENV === "production" && !!process.env.VERCEL);
 }
 
-/**
- * Writes subscriber records to a newline-delimited JSON file under the OS
- * tempdir by default. On Vercel, local writes disappear between invocations;
- * this is a scaffolding layer meant to be swapped for ConvertKit / Brevo
- * once the environment variable is set.
- */
-const STORE_PATH = process.env.PQ_SUBSCRIBER_STORE
-  ?? join(process.cwd(), ".pq-subscribers.ndjson");
+const STORE_PATH = join(tmpdir(), "pq-dev-subscribers.ndjson");
 
-export async function recordSubscriber(
-  data: Omit<SubscriberRecord, "id" | "createdAt">
-): Promise<SubscriberRecord> {
-  const record: SubscriberRecord = {
-    ...data,
-    id: randomUUID(),
-    createdAt: new Date().toISOString(),
-  };
-
+export async function recordDevSubscriber(data: { email: string; archetypeId: string; pq: number }): Promise<string> {
+  const id = randomUUID();
   try {
-    await fs.appendFile(STORE_PATH, JSON.stringify(record) + "\n", "utf8");
+    await fs.appendFile(STORE_PATH, JSON.stringify({ id, ...data, createdAt: new Date().toISOString() }) + "\n", "utf8");
   } catch (err) {
-    console.warn("[subscriber-store] failed to persist record", err);
+    console.warn("[dev-store] could not persist record:", err instanceof Error ? err.message : err);
   }
-
-  // ConvertKit / Brevo integration point
-  if (process.env.CONVERTKIT_API_KEY && process.env.CONVERTKIT_FORM_ID) {
-    try {
-      await fetch(
-        `https://api.convertkit.com/v3/forms/${process.env.CONVERTKIT_FORM_ID}/subscribe`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            api_key: process.env.CONVERTKIT_API_KEY,
-            email: record.email,
-            fields: {
-              pq_archetype: record.archetypeId,
-              pq_score: record.pq,
-              pq_control: record.scores.control,
-              pq_visibility: record.scores.visibility,
-              pq_time_horizon: record.scores.timeHorizon,
-              pq_power_source: record.scores.powerSource,
-            },
-          }),
-        }
-      );
-    } catch (err) {
-      console.warn("[subscriber-store] ConvertKit sync failed", err);
-    }
-  }
-
-  return record;
+  return id;
 }

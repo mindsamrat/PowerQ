@@ -1,5 +1,6 @@
 import { questions, type Question, type ChoiceQuestion, type FreeTextQuestion, type EmailQuestion, type OptionId } from "@/data/questions";
 import { calculateAxisScores, matchArchetype, computePQ, type AnswerDelta, type AxisScores, type MatchResult, type ScoredAnswer } from "@/lib/scoring";
+import { CONFIDENCE_HIGH_GAP, CONFIDENCE_HIGH_PQ, CONFIDENCE_HIGH_MIN_SPREAD, meanSpread } from "@/lib/result-analysis";
 
 export interface ChoiceAnswer {
   questionId: string;
@@ -34,8 +35,9 @@ const email = questions.filter((q): q is EmailQuestion => q.kind === "email");
  * Build the maximum plan a user can see: all calibration + branched +
  * tiebreaker + free-text + email questions in order. The tiebreaker block is
  * conditionally skipped at runtime by nextServableCursor() when the interim
- * archetype match is unambiguous — so most users complete in ~22 questions
- * even though the plan length is 27.
+ * archetype match is already unambiguous — so a clear respondent answers 24
+ * choice questions instead of 27 (plus two optional free-text steps and the
+ * email step).
  */
 export function buildQuizPlan(_seed?: string): Question[] {
   void _seed;
@@ -43,38 +45,47 @@ export function buildQuizPlan(_seed?: string): Question[] {
 }
 
 /** Minimum runner-up fit gap (match-strength points) required to skip the tiebreaker block. */
-const TIEBREAKER_SKIP_GAP = 14;
+const TIEBREAKER_SKIP_GAP = CONFIDENCE_HIGH_GAP;
 /** …and the interim signature must already be reasonably well-defined. */
-const TIEBREAKER_SKIP_PQ = 48;
+const TIEBREAKER_SKIP_PQ = CONFIDENCE_HIGH_PQ;
+
+export interface ProgressInfo {
+  kind: "choice" | "free-text" | "email";
+  /** 1-based number of the current choice question (choice steps only). */
+  questionNumber: number;
+  /** 27, or 24 once the tiebreakers have actually been skipped. Never grows. */
+  questionTotal: number;
+  /** 0–1 for the progress bar. Only ever moves forward. */
+  fraction: number;
+}
 
 /**
- * How many further steps (questions actually served) lie ahead, given the
- * current progress. Used by the UI's progress bar so the "12 / 24" counter
- * stays honest even when tiebreakers will be skipped.
+ * Progress for the quiz header. The tiebreaker skip is only counted once it
+ * has actually happened (the cursor is past the block without serving it),
+ * so totals can shrink once but never grow, and the bar never moves backwards.
  */
-export function remainingServedSteps(
-  fromCursor: number,
-  plan: Question[],
-  progress: QuizProgress
-): number {
-  let i = fromCursor;
-  let count = 0;
-  while (i < plan.length) {
-    const next = nextServableCursor(i, plan, progress);
-    if (next >= plan.length) break;
-    count += 1;
-    i = next + 1;
-  }
-  return count;
+export function progressInfo(cursor: number, plan: Question[], progress: QuizProgress): ProgressInfo {
+  const current = plan[Math.min(cursor, plan.length - 1)];
+  const tiebreakerIndexes = plan.map((q, i) => (q.kind === "tiebreaker" ? i : -1)).filter((i) => i >= 0);
+  const lastTiebreaker = tiebreakerIndexes.length ? Math.max(...tiebreakerIndexes) : -1;
+  const servedTiebreaker = progress.served.some((id) => tiebreakers.some((t) => t.id === id));
+  const skipped = lastTiebreaker >= 0 && cursor > lastTiebreaker && !servedTiebreaker;
+  const choiceTotal = plan.filter((q) => q.kind !== "free-text" && q.kind !== "email").length - (skipped ? tiebreakerIndexes.length : 0);
+  const stepTotal = plan.length - (skipped ? tiebreakerIndexes.length : 0);
+  return {
+    kind: current.kind === "free-text" ? "free-text" : current.kind === "email" ? "email" : "choice",
+    questionNumber: Math.min(progress.choiceAnswers.length + 1, choiceTotal),
+    questionTotal: choiceTotal,
+    fraction: Math.min(1, (progress.served.length + 1) / stepTotal),
+  };
 }
 
 /**
  * Advance the cursor past any question that no longer needs to be served.
  *
- * Right now the only adaptive rule is: skip the tiebreaker questions once
- * the user's interim archetype match has a runner-up gap of at least 8
- * units. This drops the typical served-question count from 27 down to ~22
- * without sacrificing match quality.
+ * The only adaptive rule: skip the three tiebreaker questions when, at that
+ * point, the interim match already meets the "Strong match" bar (fit gap,
+ * PQ and spread thresholds shared with readConfidence in result-analysis).
  *
  * Returns the index of the next question the UI should render. Returns
  * `plan.length` when there's nothing left.
@@ -97,7 +108,7 @@ export function nextServableCursor(
     const match = matchArchetype(interim);
     const interimPq = computePQ(interim, scored);
 
-    if (match.gap >= TIEBREAKER_SKIP_GAP && interimPq >= TIEBREAKER_SKIP_PQ) {
+    if (match.gap >= TIEBREAKER_SKIP_GAP && interimPq >= TIEBREAKER_SKIP_PQ && meanSpread(interim) >= CONFIDENCE_HIGH_MIN_SPREAD) {
       // Confidently matched — skip every contiguous tiebreaker that follows.
       i += 1;
       continue;

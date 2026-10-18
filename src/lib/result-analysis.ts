@@ -1,6 +1,7 @@
 import { archetypes, getCentroid, axisLabels, type Archetype, type AxisId } from "@/data/archetypes";
 import { questions } from "@/data/questions";
 import { centredOptionVector, cosine, AXES as AXIS_ORDER } from "@/lib/archetype-insights";
+import { rankArchetypes } from "@/lib/scoring";
 import type { AxisScores, MatchResult } from "@/lib/scoring";
 import type { StoredAnswer } from "@/lib/signature-answers";
 
@@ -23,31 +24,29 @@ export interface BlendEntry {
 }
 
 export function archetypeFits(scores: AxisScores): { archetype: Archetype; fit: number }[] {
-  const axes: AxisId[] = ["control", "visibility", "timeHorizon", "powerSource"];
-  const v = axes.map((ax) => scores[ax] - 50);
-  const vNorm = Math.hypot(...v);
-  return archetypes.map((a) => {
-    const c = getCentroid(a);
-    const dir = axes.map((ax) => c[ax] - 50);
-    const dNorm = Math.hypot(...dir) || 1;
-    const cos = vNorm < 1e-6 ? 0 : v.reduce((s, x, i) => s + x * dir[i], 0) / (vNorm * dNorm);
-    return { archetype: a, fit: Math.round(100 * cos) };
-  });
+  return rankArchetypes(scores).map((r) => ({ archetype: r.archetype, fit: Math.round(100 * r.cos) }));
+}
+
+/** Round percentages so they sum to exactly 100 (largest remainder). */
+function roundToHundred(raw: number[]): number[] {
+  const floors = raw.map((x) => Math.floor(x));
+  let remaining = 100 - floors.reduce((s, x) => s + x, 0);
+  const order = raw.map((x, i) => ({ i, rem: x - Math.floor(x) })).sort((a, b) => b.rem - a.rem || a.i - b.i);
+  for (const { i } of order) {
+    if (remaining <= 0) break;
+    floors[i] += 1;
+    remaining -= 1;
+  }
+  return floors;
 }
 
 export function archetypeBlend(scores: AxisScores): BlendEntry[] {
-  const fits = archetypeFits(scores);
-  const expWeights = fits.map((x) => Math.exp((x.fit - 100) / BLEND_TEMP));
-  const total = expWeights.reduce((s, x) => s + x, 0) || 1;
-
-  return fits
-    .map((x, i) => ({
-      id: x.archetype.id,
-      name: x.archetype.name,
-      fit: x.fit,
-      percent: Math.round((expWeights[i] / total) * 100),
-    }))
-    .sort((a, b) => b.percent - a.percent || b.fit - a.fit);
+  // Same ranking as the verdict, so blend[0] is always the verdict archetype.
+  const ranked = rankArchetypes(scores);
+  const weights = ranked.map((r) => Math.exp((100 * r.cos - 100) / BLEND_TEMP));
+  const total = weights.reduce((s, x) => s + x, 0) || 1;
+  const percents = roundToHundred(weights.map((w) => (100 * w) / total));
+  return ranked.map((r, i) => ({ id: r.archetype.id, name: r.archetype.name, fit: Math.round(100 * r.cos), percent: percents[i] }));
 }
 
 // ---------- Match confidence ----------
@@ -77,10 +76,22 @@ export const CONFIDENCE_HIGH_GAP = 14;
 export const CONFIDENCE_HIGH_PQ = 48;
 export const CONFIDENCE_MODERATE_GAP = 7;
 export const CONFIDENCE_MODERATE_PQ = 40;
+/**
+ * Direction matching ignores magnitude, so a near-neutral random profile can
+ * still show a large fit gap. A minimum distance from neutral (mean |score-50|,
+ * in points) stops random clicking from reading as a strong or clear match.
+ */
+export const CONFIDENCE_HIGH_MIN_SPREAD = 9;
+export const CONFIDENCE_MODERATE_MIN_SPREAD = 6;
+
+export function meanSpread(scores: AxisScores): number {
+  return (Math.abs(scores.control - 50) + Math.abs(scores.visibility - 50) + Math.abs(scores.timeHorizon - 50) + Math.abs(scores.powerSource - 50)) / 4;
+}
 
 export function readConfidence(match: MatchResult, pq: number): ConfidenceReading {
   const gap = match.gap;
-  if (gap >= CONFIDENCE_HIGH_GAP && pq >= CONFIDENCE_HIGH_PQ) {
+  const spread = meanSpread(match.scores);
+  if (gap >= CONFIDENCE_HIGH_GAP && pq >= CONFIDENCE_HIGH_PQ && spread >= CONFIDENCE_HIGH_MIN_SPREAD) {
     return {
       level: "high",
       label: "Strong match",
@@ -88,7 +99,7 @@ export function readConfidence(match: MatchResult, pq: number): ConfidenceReadin
       gap,
     };
   }
-  if (gap >= CONFIDENCE_MODERATE_GAP && pq >= CONFIDENCE_MODERATE_PQ) {
+  if (gap >= CONFIDENCE_MODERATE_GAP && pq >= CONFIDENCE_MODERATE_PQ && spread >= CONFIDENCE_MODERATE_MIN_SPREAD) {
     return {
       level: "moderate",
       label: "Clear match",
@@ -121,36 +132,43 @@ export interface AxisAttributionEntry {
 
 export type AxisAttribution = Record<AxisId, AxisAttributionEntry[]>;
 
-export function perAxisAttribution(answers: StoredAnswer[]): AxisAttribution {
-  const axes: AxisId[] = ["control", "visibility", "timeHorizon", "powerSource"];
-  const result = {} as AxisAttribution;
+/** First answer per question wins — the same rule the scorer uses. */
+export function dedupeAnswers<T extends { q: string }>(answers: T[]): T[] {
+  const seen = new Set<string>();
+  return answers.filter((a) => (a && typeof a.q === "string" && !seen.has(a.q) ? (seen.add(a.q), true) : false));
+}
 
-  for (const axis of axes) {
-    const enriched = answers
+/**
+ * For each axis, the two answers that pushed the score furthest in the
+ * direction it actually ended up (above or below 50). Contributions are
+ * centred within each question, exactly as the scorer counts them; the
+ * reported delta is that centred contribution.
+ */
+export function perAxisAttribution(answers: StoredAnswer[], scores: AxisScores): AxisAttribution {
+  const result = {} as AxisAttribution;
+  const clean = dedupeAnswers(answers);
+
+  AXIS_ORDER.forEach((axis, axisIndex) => {
+    const direction = Math.sign(scores[axis] - 50);
+    const entries = clean
       .map((a) => {
         const q = questions.find((qq) => qq.id === a.q);
         if (!q || q.kind === "free-text" || q.kind === "email") return null;
         const option = q.options.find((o) => o.id === a.o);
-        if (!option) return null;
-        const delta = a.d[axis] ?? 0;
-        if (Math.abs(delta) < 5) return null;
-        return {
-          questionId: a.q,
-          prompt: q.prompt,
-          optionText: option.text,
-          delta,
-          framework: q.framework,
-          magnitude: Math.abs(delta),
-        };
+        const centred = centredOptionVector(q, a.o);
+        if (!option || !centred) return null;
+        const contribution = centred[axisIndex];
+        if (Math.abs(contribution) < 2.5) return null;
+        if (direction !== 0 && Math.sign(contribution) !== direction) return null;
+        return { questionId: a.q, prompt: q.prompt, optionText: option.text, delta: Math.round(contribution), framework: q.framework, magnitude: Math.abs(contribution) };
       })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
-
-    enriched.sort((a, b) => b.magnitude - a.magnitude);
-    result[axis] = enriched.slice(0, 2).map(({ magnitude: _, ...rest }) => {
-      void _;
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((x, y) => y.magnitude - x.magnitude || x.questionId.localeCompare(y.questionId));
+    result[axis] = entries.slice(0, 2).map(({ magnitude: _m, ...rest }) => {
+      void _m;
       return rest;
     });
-  }
+  });
 
   return result;
 }
@@ -492,6 +510,15 @@ const CHAMELEON_FILLER: Omit<InteractionReading, "strength"> = {
   move: "Pick one axis and commit to it for six months. A signature is a choice before it is a trait.",
 };
 
+const LEAD_AXIS_FILLER: Omit<InteractionReading, "strength"> = {
+  id: "lead-axis", label: "Choosing a Lead Axis", axes: null,
+  framework: "Situational Strength — Mischel, 1977",
+  mechanism: "With every axis near the middle, your behaviour is decided by the situation more than by a fixed style. That keeps you adaptable, and it also means other people cannot predict which version of you will show up.",
+  edge: "Few rooms find you difficult. You can work alongside almost any archetype.",
+  risk: "Without a lead axis, the strongest personality in the room tends to set your direction for you.",
+  move: "For the next month, pick the one axis your goals need most and lean into it deliberately in one recurring situation.",
+};
+
 const BALANCED_FILLER: Omit<InteractionReading, "strength"> = {
   id: "balanced", label: "Balanced Elsewhere", axes: null,
   framework: "Situational Strength — Mischel, 1977",
@@ -504,6 +531,40 @@ const BALANCED_FILLER: Omit<InteractionReading, "strength"> = {
 /** Both axes must sit at least this far from neutral (in the rule's direction) for a rule to fire. */
 const INTERACTION_THRESHOLD = 8;
 
+/** Mid band is 34–66; "neutral" for the Chameleon reading means every axis sits inside it. */
+const MID_BAND_HALF_WIDTH = 17;
+
+const AXIS_FRAMEWORK: Record<AxisId, string> = {
+  control: "Locus of Control — Rotter, 1966",
+  visibility: "Public Self-Consciousness — Fenigstein, Scheier & Buss, 1975",
+  timeHorizon: "Consideration of Future Consequences — Strathman et al., 1994",
+  powerSource: "Bases of Social Power — French & Raven, 1959",
+};
+
+/** A reading for one pronounced axis, used when no pairing rule applies to it. */
+function singleAxisReading(scores: AxisScores, axis: AxisId): InteractionReading {
+  const value = scores[axis];
+  const band: "high" | "low" = value >= 50 ? "high" : "low";
+  const r = READINGS[axis][band];
+  return {
+    id: `axis-${axis}-${band}`,
+    label: `Your sharpest axis: ${band === "high" ? "High" : "Low"} ${axisLongLabels[axis]}`,
+    axes: null,
+    strength: Math.round((100 * Math.abs(value - 50)) / 45),
+    framework: AXIS_FRAMEWORK[axis],
+    mechanism: `${axisLongLabels[axis]} at ${value} is the furthest of your four axes from neutral, and none of the pairings around it reaches the threshold for a combined reading. ${r.strength}`,
+    edge: r.strength,
+    risk: r.warning,
+    move: r.practice,
+  };
+}
+
+/**
+ * Exactly two readings, always mutually consistent:
+ *  - up to two pairing rules that genuinely fire, strongest first;
+ *  - otherwise the most pronounced single axes not already covered;
+ *  - the Chameleon reading only when every axis sits in the mid band.
+ */
 export function interactionReadings(scores: AxisScores): InteractionReading[] {
   const fired = INTERACTION_RULES
     .map((rule) => {
@@ -523,9 +584,24 @@ export function interactionReadings(scores: AxisScores): InteractionReading[] {
     void _dirs;
     return { ...rest, strength };
   });
-  if (out.length === 0) out.push({ ...CHAMELEON_FILLER, strength: 0 });
+  if (out.length === 2) return out;
+
+  const allMid = AXIS_ORDER.every((ax) => Math.abs(scores[ax] - 50) < MID_BAND_HALF_WIDTH);
+  if (out.length === 0 && allMid) {
+    return [{ ...CHAMELEON_FILLER, strength: 0 }, { ...LEAD_AXIS_FILLER, strength: 0 }];
+  }
+
+  const covered = new Set(out.flatMap((r) => r.axes ?? []));
+  const candidates = AXIS_ORDER
+    .filter((ax) => !covered.has(ax) && Math.abs(scores[ax] - 50) >= MID_BAND_HALF_WIDTH)
+    .sort((x, y) => Math.abs(scores[y] - 50) - Math.abs(scores[x] - 50));
+  for (const ax of candidates) {
+    if (out.length === 2) break;
+    out.push(singleAxisReading(scores, ax));
+  }
   if (out.length === 1) out.push({ ...BALANCED_FILLER, strength: 0 });
-  return out;
+  if (out.length === 0) out.push({ ...CHAMELEON_FILLER, strength: 0 }, { ...LEAD_AXIS_FILLER, strength: 0 });
+  return out.slice(0, 2);
 }
 
 // ---------- Answer consistency (paired questions) ----------
@@ -594,7 +670,8 @@ const CONTRADICTION_COS = -0.15;
 const CONSISTENT_COS = 0.15;
 
 export function evaluateContradictions(answers: { q: string; o: string }[]): ConsistencyResult {
-  const byId = new Map(answers.map((a) => [a.q, a.o]));
+  const byId = new Map<string, string>();
+  for (const a of answers) if (a && typeof a.q === "string" && !byId.has(a.q)) byId.set(a.q, a.o);
   const pairs: PairReading[] = [];
 
   for (const pair of CONTRADICTION_PAIRS) {
@@ -611,15 +688,31 @@ export function evaluateContradictions(answers: { q: string; o: string }[]): Con
     if (!va || !vb || !optA || !optB) continue;
 
     const cos = cosine(va, vb);
-    const diffs = AXIS_ORDER.map((_, i) => Math.abs(va[i] - vb[i]));
-    const axis = AXIS_ORDER[diffs.indexOf(Math.max(...diffs))];
     const agreement: PairAgreement = cos < CONTRADICTION_COS ? "contradiction" : cos > CONSISTENT_COS ? "consistent" : "neutral";
+    const argmax = (score: (i: number) => number) => {
+      let best = 0;
+      AXIS_ORDER.forEach((_, i) => { if (score(i) > score(best)) best = i; });
+      return best;
+    };
+    // Name the axis that actually explains the verdict: where the answers
+    // agree most (consistent), where they pull in opposite directions
+    // (contradiction), or each answer's own main axis (neutral).
+    const axisIndex =
+      agreement === "consistent"
+        ? argmax((i) => va[i] * vb[i])
+        : agreement === "contradiction"
+          ? argmax((i) => (va[i] * vb[i] < 0 ? Math.abs(va[i] - vb[i]) : -1))
+          : argmax((i) => Math.abs(va[i]));
+    const axis = AXIS_ORDER[axisIndex];
+    const otherAxis = AXIS_ORDER[argmax((i) => Math.abs(vb[i]))];
     const reading =
       agreement === "contradiction"
         ? CONTRADICTION_COPY[axis]
         : agreement === "consistent"
           ? `Both answers pull the same way on ${axisLabels[axis]}. This part of your signature holds across situations, which is what makes it predictable to others.`
-          : `The two answers neither agree nor conflict on ${axisLabels[axis]}: one is a stronger version of the other. Read the sharper answer as the true one.`;
+          : axis === otherAxis
+            ? `These two answers lean on ${axisLabels[axis]} to different degrees without contradicting each other. Read them together: the situation changes how strongly this trait shows, not whether it does.`
+            : `These two answers measure different things: the first leans mainly on ${axisLabels[axis]}, the second on ${axisLabels[otherAxis]}. Neither contradicts the other; together they show which trait each situation brings out.`;
 
     pairs.push({
       pairId: pair.id,

@@ -1,86 +1,65 @@
 import { NextResponse } from "next/server";
 import { validateEmail } from "@/lib/email-validation";
-import { recordSubscriber } from "@/lib/subscriber-store";
-import { saveResponseToSupabase, isSupabaseConfigured } from "@/lib/supabase-server";
+import { isProductionRuntime, recordDevSubscriber } from "@/lib/subscriber-store";
+import { findRecentDuplicate, isSupabaseConfigured, saveResponseToSupabase } from "@/lib/supabase-server";
 import { calculateAxisScores, matchArchetype, computePQ, type ScoredAnswer } from "@/lib/scoring";
 import { questions } from "@/data/questions";
-import { checkResponsesPerIp, getClientIp } from "@/lib/rate-limit";
+import { checkSubmissionLimits, getClientIp } from "@/lib/rate-limit";
+import { readJsonBody, rejectCrossSite } from "@/lib/http";
+import { sanitizeFreeText, sanitizeName } from "@/lib/sanitize";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
-interface AnswerEntry {
+/** A full submission is ~4 KB. 32 KB leaves room for long free text and nothing more. */
+const MAX_BODY_BYTES = 32 * 1024;
+const MAX_ANSWERS = 60;
+const FREE_TEXT_IDS = new Set(questions.filter((q) => q.kind === "free-text").map((q) => q.id));
+
+const ATTRIBUTION_KEYS = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "ref", "landing"] as const;
+
+function sanitizeAttribution(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, string> = {};
+  for (const key of ATTRIBUTION_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value !== "string") continue;
+    const clean = value.slice(0, 100).replace(/[^\w.\-~+%/: ]/g, "").trim();
+    if (clean) out[key] = clean;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+interface ValidAnswer {
   q: string;
   o: string;
-  // d is accepted in the payload for backward compat but IGNORED server-side —
-  // we look up the actual delta from the question bank to prevent score forgery.
-  d?: { control: number; visibility: number; timeHorizon: number; powerSource: number };
-  // Displayed position 0–3 (options are shuffled per session). Stored for
-  // position-bias analysis; never affects scoring.
   pos?: number;
-}
-
-interface FreeTextEntry {
-  questionId: string;
-  text: string;
-}
-
-interface SubscribePayload {
-  name: string;
-  email: string;
-  // Client may send these but they're ignored — we recompute server-side.
-  archetypeId?: string;
-  scores?: { control: number; visibility: number; timeHorizon: number; powerSource: number };
-  pq?: number;
-  answers?: AnswerEntry[];
-  freeText?: FreeTextEntry[];
-  source?: "free-pdf" | "paid-pdf";
-  honeypot?: string;
-}
-
-function sanitizeName(raw: string | undefined): string {
-  if (!raw) return "";
-  return raw
-    .replace(/<[^>]*>/g, "")
-    .replace(/https?:\/\/\S+/gi, "")
-    .replace(/@\S+/g, "")
-    .replace(/[\x00-\x1f\x7f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 60);
-}
-
-function sanitizeFreeText(raw: string | undefined): string {
-  if (!raw) return "";
-  return raw
-    .replace(/<[^>]*>/g, "")
-    .replace(/https?:\/\/\S+/gi, "")
-    .replace(/@\S+/g, "")
-    .replace(/[\x00-\x1f\x7f]/g, "")
-    .trim()
-    .slice(0, 280);
+  d: { control: number; visibility: number; timeHorizon: number; powerSource: number };
 }
 
 /**
- * Recompute axis scores, archetype, and PQ from the answers array.
- * The client's claimed scores/archetypeId are IGNORED. This is the trust
- * boundary — a forged POST cannot grant a Shadow archetype or any other
- * outcome.
+ * Recompute everything from the answers. Client-claimed scores and archetype
+ * are ignored: this is the trust boundary. One answer per question; deltas
+ * come from the question bank, never the request.
  */
-function recomputeFromAnswers(answers: AnswerEntry[]) {
-  const scored: ScoredAnswer[] = [];
+function validateAnswers(raw: unknown): ValidAnswer[] {
+  if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
-
-  for (const a of answers) {
-    if (!a?.q || !a?.o) continue;
-    if (seen.has(a.q)) continue; // one answer per question — ignore duplicates
-    const q = questions.find((qq) => qq.id === a.q);
+  const out: ValidAnswer[] = [];
+  for (const entry of raw.slice(0, MAX_ANSWERS)) {
+    if (!entry || typeof entry !== "object") continue;
+    const { q: qid, o: oid, pos } = entry as { q?: unknown; o?: unknown; pos?: unknown };
+    if (typeof qid !== "string" || typeof oid !== "string" || seen.has(qid)) continue;
+    const q = questions.find((qq) => qq.id === qid);
     if (!q || q.kind === "free-text" || q.kind === "email") continue;
-    const option = q.options.find((o) => o.id === a.o);
+    const option = q.options.find((o) => o.id === oid);
     if (!option) continue;
-    seen.add(a.q);
-    scored.push({
-      questionId: q.id,
-      delta: {
+    seen.add(qid);
+    out.push({
+      q: q.id,
+      o: option.id,
+      ...(Number.isInteger(pos) && (pos as number) >= 0 && (pos as number) <= 3 ? { pos: pos as number } : {}),
+      d: {
         control: option.scores.control ?? 0,
         visibility: option.scores.visibility ?? 0,
         timeHorizon: option.scores.timeHorizon ?? 0,
@@ -88,139 +67,95 @@ function recomputeFromAnswers(answers: AnswerEntry[]) {
       },
     });
   }
-
-  const scores = calculateAxisScores(scored);
-  const match = matchArchetype(scores);
-  const pq = computePQ(scores, scored);
-  return { scores, match, pq, validCount: scored.length };
+  return out;
 }
 
 export async function POST(req: Request) {
-  let body: Partial<SubscribePayload>;
   try {
-    body = (await req.json()) as Partial<SubscribePayload>;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON." }, { status: 400 });
+    return await handle(req);
+  } catch (err) {
+    console.error("[subscribe] unexpected error:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Something went wrong on our side. Your answers are safe on this device." }, { status: 500 });
   }
+}
 
-  // Silent success on honeypot — never reveal the trap.
-  if (body.honeypot) {
+async function handle(req: Request) {
+  const refused = rejectCrossSite(req);
+  if (refused) return refused;
+
+  const parsed = await readJsonBody(req, MAX_BODY_BYTES);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.body;
+
+  // Honeypot: a hidden field real users never see. Silent success for bots.
+  if (typeof body.website === "string" && body.website.trim() !== "") {
     return NextResponse.json({ ok: true }, { status: 200 });
   }
 
   const name = sanitizeName(body.name);
   if (name.length === 0) {
-    return NextResponse.json({ error: "Please enter your name." }, { status: 400 });
+    return NextResponse.json({ error: "Please enter your first name." }, { status: 400 });
   }
 
-  const emailCheck = await validateEmail(body.email ?? "");
+  const emailCheck = await validateEmail(typeof body.email === "string" ? body.email : "");
   if (!emailCheck.valid || !emailCheck.normalized) {
     return NextResponse.json({ error: emailCheck.error ?? "Invalid email." }, { status: 400 });
   }
+  const email = emailCheck.normalized;
 
-  // Cap the array so a hostile payload can't make us loop over thousands of entries.
-  const rawAnswers = (Array.isArray(body.answers) ? body.answers : []).slice(0, 60);
-  if (rawAnswers.length < 15) {
-    // Fewer than 15 valid choice answers means someone is trying to skip the quiz.
-    return NextResponse.json({ error: "Quiz appears incomplete." }, { status: 400 });
+  const answers = validateAnswers(body.answers);
+  if (answers.length < 15) {
+    return NextResponse.json({ error: "Your answers didn't come through. Please go back and finish the assessment." }, { status: 400 });
   }
 
-  const { scores, match, pq, validCount } = recomputeFromAnswers(rawAnswers);
-  if (validCount < 15) {
-    return NextResponse.json({ error: "Quiz answers could not be verified." }, { status: 400 });
-  }
+  const scored: ScoredAnswer[] = answers.map((a) => ({ questionId: a.q, delta: a.d }));
+  const scores = calculateAxisScores(scored);
+  const match = matchArchetype(scores);
+  const pq = computePQ(scores, scored);
 
-  // Sanitised free-text — also length-capped and HTML-stripped.
-  const freeTextRaw = Array.isArray(body.freeText) ? body.freeText : [];
-  const freeText = freeTextRaw
-    .filter((f) => f && typeof f.questionId === "string")
-    .map((f) => ({
-      questionId: String(f.questionId).slice(0, 16),
-      text: sanitizeFreeText(typeof f.text === "string" ? f.text : ""),
-    }))
-    .filter((f) => f.text.length > 0)
-    .slice(0, 4);
+  const seenFreeText = new Set<string>();
+  const freeText = (Array.isArray(body.freeText) ? body.freeText.slice(0, 4) : [])
+    .map((f) => (f && typeof f === "object" ? (f as { questionId?: unknown; text?: unknown }) : null))
+    .filter((f): f is { questionId: string; text?: unknown } => !!f && typeof f.questionId === "string" && FREE_TEXT_IDS.has(f.questionId))
+    .filter((f) => (seenFreeText.has(f.questionId) ? false : (seenFreeText.add(f.questionId), true)))
+    .map((f) => ({ questionId: f.questionId, text: sanitizeFreeText(f.text) }))
+    .filter((f) => f.text.length > 0);
 
-  const userAgent = req.headers.get("user-agent");
-  const referrer = req.headers.get("referer");
+  const marketingConsent = body.marketingConsent === true;
+  const attribution = sanitizeAttribution(body.attribution);
   const ip = getClientIp(req);
-
-  // Rate limit: at most 3 completed quizzes per IP per 24 hours. Never let a
-  // database problem here block a genuine completion.
-  const supabaseConfigured = isSupabaseConfigured();
-  if (supabaseConfigured) {
-    try {
-      const limit = await checkResponsesPerIp(ip, 3, 24);
-      if (!limit.allowed) {
-        return NextResponse.json(
-          { error: "You've already completed this assessment a few times today. Try again tomorrow." },
-          { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
-        );
-      }
-    } catch (err) {
-      console.warn("[subscribe] rate-limit check failed; allowing", err);
-    }
-  }
-
-  // Trim answer history to exactly the validated, server-side delta values
-  // before persisting — so the Supabase row never holds attacker-supplied
-  // delta numbers either.
-  const sanitizedAnswers = rawAnswers
-    .map((a) => {
-      const q = questions.find((qq) => qq.id === a.q);
-      if (!q || q.kind === "free-text" || q.kind === "email") return null;
-      const option = q.options.find((o) => o.id === a.o);
-      if (!option) return null;
-      const pos = Number.isInteger(a.pos) && (a.pos as number) >= 0 && (a.pos as number) <= 3 ? (a.pos as number) : undefined;
-      return {
-        q: q.id,
-        o: option.id,
-        ...(pos !== undefined ? { pos } : {}),
-        d: {
-          control: option.scores.control ?? 0,
-          visibility: option.scores.visibility ?? 0,
-          timeHorizon: option.scores.timeHorizon ?? 0,
-          powerSource: option.scores.powerSource ?? 0,
-        },
-      };
-    })
-    .filter((a): a is NonNullable<typeof a> => a !== null);
+  const userAgent = req.headers.get("user-agent");
 
   let responseId: string | null = null;
-  if (supabaseConfigured) {
+  let limited = false;
+
+  if (isSupabaseConfigured()) {
     try {
-      responseId = await saveResponseToSupabase({
-        name,
-        email: emailCheck.normalized,
-        archetypeId: match.archetype.id,
-        pq,
-        scores,
-        answers: sanitizedAnswers,
-        freeText,
-        userAgent,
-        ipAddress: ip,
-      });
+      // Same email + same answers moments ago (double tap, client retry,
+      // background re-submit): reuse that row instead of inserting again.
+      responseId = await findRecentDuplicate(email, answers);
+      if (!responseId) {
+        const limit = await checkSubmissionLimits(email, ip);
+        if (!limit.allowed) {
+          // Never withhold a computed result. Show it; just don't store more.
+          limited = true;
+          console.warn(`[subscribe] limit reached (${limit.reason}); serving result without saving`);
+        } else {
+          responseId = await saveResponseToSupabase({
+            name, email, archetypeId: match.archetype.id, pq, scores, answers, freeText,
+            userAgent, ipAddress: ip, marketingConsent, attribution,
+          });
+        }
+      }
     } catch (err) {
-      // The database is down or the project is paused. Someone who just
-      // answered 27 questions must still get their result, so we log loudly
-      // and continue in a degraded mode: results and the free summary work,
-      // only the paid report (which needs a stored row) is unavailable. The
-      // client re-submits in the background so nothing is lost if the
-      // database comes back within the session.
-      console.error("[subscribe] supabase write failed; serving degraded result", err);
+      // Database down or paused: serve the result in degraded mode. The client
+      // queues the submission and retries in the background.
+      console.error("[subscribe] supabase write failed; serving degraded result:", err instanceof Error ? err.message : err);
     }
+  } else if (isProductionRuntime()) {
+    console.error("[subscribe] SUPABASE_URL / SUPABASE_SECRET_KEY are not set in production. Responses are NOT being saved.");
   } else {
-    // Dev fallback when Supabase env is missing locally.
-    const record = await recordSubscriber({
-      email: emailCheck.normalized,
-      archetypeId: match.archetype.id,
-      scores,
-      pq,
-      source: body.source === "paid-pdf" ? "paid-pdf" : "free-pdf",
-      userAgent,
-      referrer,
-    });
-    responseId = record.id;
+    responseId = await recordDevSubscriber({ email, archetypeId: match.archetype.id, pq });
   }
 
   const qs = new URLSearchParams({
@@ -235,16 +170,11 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     ok: true,
-    // true when the result is valid but could not be persisted.
+    // true when the result is valid but was not stored (database down or daily limit).
     degraded: !responseId,
+    limited,
     responseId,
-    // Tell the client the server-computed result so the URL it builds for
-    // /results matches what's actually in the database.
-    result: {
-      archetypeId: match.archetype.id,
-      scores,
-      pq,
-    },
+    result: { archetypeId: match.archetype.id, scores, pq, answered: answers.length },
     downloadUrl: `/api/pdf/free?${qs.toString()}`,
   });
 }

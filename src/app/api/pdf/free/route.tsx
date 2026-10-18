@@ -1,4 +1,4 @@
-import { renderToStream, Document, Page, Text, View, StyleSheet, Font } from "@react-pdf/renderer";
+import { renderToStream, Document, Page, Text, View, StyleSheet, Font, Link } from "@react-pdf/renderer";
 import { join } from "node:path";
 import React from "react";
 import {
@@ -16,6 +16,7 @@ import { readConfidence } from "@/lib/result-analysis";
 import { PAID_REPORT_PAGES } from "@/data/report-meta";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 function clamp(raw: string | null, fallback = 50): number {
   if (!raw) return fallback;
@@ -67,6 +68,7 @@ const styles = StyleSheet.create({
   tableRow: { flexDirection: "row", paddingVertical: 4, paddingHorizontal: 4 },
   tableKey: { width: "45%", fontSize: 9.5, color: "#0A0A0A", fontWeight: 700 },
   tableVal: { width: "55%", fontSize: 9.5, color: "#7A0C1B", fontWeight: 700 },
+  link: { fontSize: 11, color: "#9F1024", fontWeight: 700, textDecoration: "none", marginBottom: 10 },
 });
 
 function axisBarRow(axis: AxisId, value: number) {
@@ -142,7 +144,7 @@ export async function GET(req: Request) {
         <Text style={[styles.body, { marginTop: 14 }]}>
           Your archetype is the one whose direction from neutral best matches your four axis scores; Fit says how closely.
           PQ measures how sharply defined your signature is, not how much power you have — every archetype can score high.
-          {" "}{archetype.name} appears in approximately {archetype.rarity}% of respondents, the {rank}{ordinal} rarest of 8.
+          {" "}{archetype.name} is estimated at about {archetype.rarity}% of respondents (the {rank}{ordinal} rarest of 8; recalibrated as real responses come in).
         </Text>
 
         <Text style={styles.footer}>Way of Gods · PQ Assessment · Document {token || "FREE"}</Text>
@@ -189,25 +191,26 @@ export async function GET(req: Request) {
         <Text style={styles.label}>Next</Text>
         <Text style={styles.heading}>The Full Report</Text>
         <Text style={styles.body}>
-          The paid PQ Report is {PAID_REPORT_PAGES} pages of personalized analysis: how {archetype.name} operates in love,
-          money, work, conflict, and legacy. Seven laws specific to your archetype. Three failure modes
-          and the early warning signs of each. Your Hidden Edge — the quality most people underestimate
-          about you, reframed as leverage.
+          The full PQ Report is {PAID_REPORT_PAGES} pages built from your own answers: a one-page profile sheet, a deep dive on each of the four axes
+          with the answers that produced the score, how {archetype.name} wins and loses, who amplifies and drains you, where your axes interact and
+          where your answers contradict, the seven laws for your type, a 90-day roadmap, and every answer you gave, scored and cited.
         </Text>
 
         <Text style={styles.body}>
-          The report is generated on demand and watermarked to your email. It arrives within one minute
-          of purchase. Delivered as a PDF.
+          It is generated as soon as payment is confirmed (usually within seconds) and downloads as a PDF watermarked to your email.
+          Unlock it from your results page.
         </Text>
+        <Link src="https://quiz.wayofgods.com/quiz" style={styles.link}>Take the assessment again: quiz.wayofgods.com</Link>
 
         <View style={styles.divider} />
 
-        <Text style={styles.sectionHeading}>Sovereign: The Book</Text>
+        <Text style={styles.sectionHeading}>Sovereign Doctrine</Text>
         <Text style={styles.body}>
-          The PQ framework is the diagnostic; the Sovereign book series is the instruction manual. For
-          {" "}{archetype.name} types, start with Book I — the chapters on {archetype.timeHorizon.min > 50 ? "long-horizon leverage and concealed moves" : "fast execution and visible command"}
-          will read as descriptions of moves you have already made.
+          The PQ framework is the diagnostic; Sovereign Doctrine is the instruction manual. {archetype.doctrineHook} Start with the chapters on
+          {" "}{archetype.timeHorizon.min > 50 ? "long-horizon leverage and concealed moves" : "fast execution and visible command"}
+          {" "}— they will read as descriptions of moves you have already made.
         </Text>
+        <Link src={`https://quiz.wayofgods.com/book?from=freepdf&archetype=${archetype.id}`} style={styles.link}>Get Sovereign Doctrine: quiz.wayofgods.com/book</Link>
 
         <Text style={styles.footer}>Way of Gods · PQ Assessment · Document {token || "FREE"}</Text>
       </Page>
@@ -229,7 +232,8 @@ export async function GET(req: Request) {
     headers: {
       "Content-Type": "application/pdf",
       "Content-Disposition": `inline; filename="pq-${archetype.id}.pdf"`,
-      "Cache-Control": "no-store",
+      // Output depends only on the (clamped) query string, so the CDN can serve repeats.
+      "Cache-Control": "public, max-age=3600, s-maxage=604800",
     },
   });
 }

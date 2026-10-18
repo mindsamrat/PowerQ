@@ -1,175 +1,150 @@
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { getResponseById, markResponsePaid } from "@/lib/supabase-server";
+import { fulfilPayment, isPaymentId } from "@/lib/fulfilment";
+import { setPaymentStatus, SupabaseUnavailableError, shortId, type RevokedStatus } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 const TOLERANCE_SECONDS = 5 * 60;
+const MAX_BODY_BYTES = 256 * 1024;
 
 /**
- * Dodo Payments webhook handler.
+ * Dodo Payments webhook.
  *
- * URL to register in Dodo dashboard:
+ * Register in the Dodo dashboard (same mode as DODO_API_KEY):
  *   https://quiz.wayofgods.com/api/webhooks/dodo
+ * Subscribe to: payment.succeeded, refund.succeeded, dispute.opened,
+ *   dispute.won, dispute.lost, dispute.accepted, dispute.cancelled, dispute.expired
  *
- * Subscribe to these events:
- *   - payment.succeeded   -> mark response paid
- *   - payment.failed      -> log only
- *   - payment.cancelled   -> log only
+ * Signing follows Standard Webhooks (https://www.standardwebhooks.com):
+ * headers webhook-id / webhook-timestamp / webhook-signature, HMAC-SHA256 over
+ * `${id}.${timestamp}.${rawBody}` with the base64 key after "whsec_".
  *
- * Dodo uses the Standard Webhooks signing spec:
- *   https://github.com/standard-webhooks/standard-webhooks
- *   - Headers:  webhook-id, webhook-timestamp, webhook-signature
- *   - Body:     `${id}.${timestamp}.${rawBody}`
- *   - Algorithm: HMAC-SHA256, base64-encoded
- *   - Secret format: `whsec_<base64-encoded-key>` -> decode before signing
- *   - Signature header: "v1,<base64sig>" (or "v1,<sig> v2,<sig>" for multi)
+ * Status codes: 2xx = handled (Dodo stops), 401 = bad signature,
+ * 503 = temporary problem on our side (Dodo retries with backoff).
  */
+
+function signingKey(): Buffer | null {
+  const raw = process.env.DODO_WEBHOOK_SECRET?.trim();
+  if (!raw) return null;
+  if (raw.startsWith("whsec_")) {
+    const key = Buffer.from(raw.slice(6), "base64");
+    return key.length ? key : null;
+  }
+  return Buffer.from(raw, "utf8");
+}
+
+function verifySignature(key: Buffer, id: string, ts: string, body: string, header: string): boolean {
+  const expected = Buffer.from(createHmac("sha256", key).update(`${id}.${ts}.${body}`).digest("base64"));
+  for (const token of header.split(/\s+/)) {
+    const comma = token.indexOf(",");
+    const version = comma === -1 ? "" : token.slice(0, comma);
+    const sig = comma === -1 ? token : token.slice(comma + 1);
+    if (version && version !== "v1") continue;
+    const candidate = Buffer.from(sig);
+    if (candidate.length === expected.length && timingSafeEqual(candidate, expected)) return true;
+  }
+  return false;
+}
+
+/** Look for metadata in the places Dodo has used across API versions. */
+function findMetadata(data: Record<string, unknown>, event: Record<string, unknown>): Record<string, unknown> {
+  const candidates = [data.metadata, (data.object as Record<string, unknown> | undefined)?.metadata, (data.payment as Record<string, unknown> | undefined)?.metadata, event.metadata];
+  for (const c of candidates) if (c && typeof c === "object" && !Array.isArray(c)) return c as Record<string, unknown>;
+  return {};
+}
+
+const REVOKE: Record<string, RevokedStatus> = {
+  "refund.succeeded": "refunded",
+  "dispute.opened": "disputed",
+  "dispute.challenged": "disputed",
+  "dispute.lost": "charged_back",
+  "dispute.accepted": "charged_back",
+  "dispute.won": "paid",
+  "dispute.cancelled": "paid",
+  "dispute.expired": "paid",
+};
+
 export async function POST(req: Request) {
-  const secretRaw = process.env.DODO_WEBHOOK_SECRET;
-  if (!secretRaw) {
-    console.error("[dodo-webhook] DODO_WEBHOOK_SECRET not set");
-    return NextResponse.json({ error: "webhook not configured" }, { status: 500 });
+  const key = signingKey();
+  if (!key) {
+    console.error("[dodo-webhook] DODO_WEBHOOK_SECRET is not set");
+    return NextResponse.json({ error: "webhook not configured" }, { status: 503 });
   }
 
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "payload too large" }, { status: 413 });
+  }
   const rawBody = await req.text();
+  if (rawBody.length > MAX_BODY_BYTES) return NextResponse.json({ error: "payload too large" }, { status: 413 });
 
   const id = req.headers.get("webhook-id");
   const ts = req.headers.get("webhook-timestamp");
   const sigHeader = req.headers.get("webhook-signature");
-
   if (!id || !ts || !sigHeader) {
-    console.warn("[dodo-webhook] missing standard webhook headers", {
-      hasId: !!id, hasTs: !!ts, hasSig: !!sigHeader,
-    });
     return NextResponse.json({ error: "missing standard webhook headers" }, { status: 401 });
   }
 
-  // Replay protection: timestamp must be within +/- 5 minutes.
   const tsNumber = Number.parseInt(ts, 10);
-  if (Number.isNaN(tsNumber)) {
-    return NextResponse.json({ error: "bad timestamp" }, { status: 401 });
-  }
-  const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - tsNumber) > TOLERANCE_SECONDS) {
-    console.warn("[dodo-webhook] stale event", { drift: now - tsNumber });
-    return NextResponse.json({ error: "stale event" }, { status: 401 });
+  if (!/^\d+$/.test(ts) || Math.abs(Math.floor(Date.now() / 1000) - tsNumber) > TOLERANCE_SECONDS) {
+    return NextResponse.json({ error: "stale or invalid timestamp" }, { status: 401 });
   }
 
-  // Decode the signing key. Dodo gives the secret as `whsec_<base64-key>`.
-  // The bytes used for HMAC are the base64-decoded part after that prefix.
-  let signingKey: Buffer;
-  if (secretRaw.startsWith("whsec_")) {
-    signingKey = Buffer.from(secretRaw.slice(6), "base64");
-  } else {
-    // Fall back to using the secret as raw UTF-8 bytes if the prefix is absent.
-    signingKey = Buffer.from(secretRaw, "utf8");
-  }
-
-  const signedContent = `${id}.${ts}.${rawBody}`;
-  const expected = createHmac("sha256", signingKey).update(signedContent).digest("base64");
-
-  // Header value can carry multiple versioned signatures: "v1,sig v2,sig".
-  // Split on whitespace, strip each version prefix, compare to our v1 sig.
-  const candidates = sigHeader.split(/\s+/).map((tok) => {
-    const idx = tok.indexOf(",");
-    return idx === -1 ? tok : tok.slice(idx + 1);
-  });
-
-  let ok = false;
-  const expectedBuf = Buffer.from(expected);
-  for (const cand of candidates) {
-    const candBuf = Buffer.from(cand);
-    if (candBuf.length === expectedBuf.length) {
-      try {
-        if (timingSafeEqual(candBuf, expectedBuf)) {
-          ok = true;
-          break;
-        }
-      } catch { /* ignore */ }
-    }
-  }
-
-  if (!ok) {
-    console.warn("[dodo-webhook] invalid signature");
+  if (!verifySignature(key, id, ts, rawBody, sigHeader)) {
+    console.warn("[dodo-webhook] invalid signature (check DODO_WEBHOOK_SECRET matches this endpoint and mode)");
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
-  // ---- Parse + dispatch ----
-  let event: { type?: string; event_type?: string; data?: Record<string, unknown> };
+  let event: Record<string, unknown>;
   try {
-    event = JSON.parse(rawBody);
+    const parsed = JSON.parse(rawBody);
+    if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+    event = parsed as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
 
-  const type = event.type ?? event.event_type ?? "";
-  const data = (event.data ?? {}) as Record<string, unknown>;
+  const type = typeof event.type === "string" ? event.type : typeof event.event_type === "string" ? event.event_type : "";
+  const data = (event.data && typeof event.data === "object" ? event.data : {}) as Record<string, unknown>;
+  const metadata = findMetadata(data, event);
+  const responseId = typeof metadata.response_id === "string" ? metadata.response_id : null;
+  const paymentId = isPaymentId(data.payment_id) ? data.payment_id : null;
 
-  // Dodo nests `metadata` under different keys depending on the event shape:
-  //   - data.metadata
-  //   - data.object.metadata
-  //   - data.payment.metadata
-  //   - data (top-level on some versions)
-  // Also try the top-level event object as a last resort.
-  const metadataPaths: Record<string, unknown>[] = [];
-  if (data.metadata && typeof data.metadata === "object") metadataPaths.push(data.metadata as Record<string, unknown>);
-  if (data.object && typeof data.object === "object") {
-    const obj = data.object as Record<string, unknown>;
-    if (obj.metadata && typeof obj.metadata === "object") metadataPaths.push(obj.metadata as Record<string, unknown>);
-  }
-  if (data.payment && typeof data.payment === "object") {
-    const pay = data.payment as Record<string, unknown>;
-    if (pay.metadata && typeof pay.metadata === "object") metadataPaths.push(pay.metadata as Record<string, unknown>);
-  }
-  const eventTop = event as unknown as Record<string, unknown>;
-  if (eventTop.metadata && typeof eventTop.metadata === "object") metadataPaths.push(eventTop.metadata as Record<string, unknown>);
-
-  let responseId: string | null = null;
-  for (const md of metadataPaths) {
-    if (typeof md.response_id === "string") {
-      responseId = md.response_id;
-      break;
-    }
-  }
-
-  console.log("[dodo-webhook] received", { type, responseId, metadataPaths: metadataPaths.length });
+  console.log(`[dodo-webhook] ${type} response=${shortId(responseId)} payment=${paymentId ?? "none"}`);
 
   if (type === "payment.succeeded" || type === "payment.completed") {
-    if (!responseId) {
-      console.warn("[dodo-webhook] succeeded event missing response_id metadata");
-      return NextResponse.json({ ok: true, note: "no response_id" });
+    const outcome = await fulfilPayment(
+      { responseId, paymentId, status: data.status, productCart: data.product_cart, businessId: event.business_id ?? data.business_id },
+      "webhook"
+    );
+    if (outcome === "retry") {
+      return NextResponse.json({ ok: false, error: "temporarily unavailable; retry" }, { status: 503 });
     }
-    const existing = await getResponseById(responseId);
-    if (existing?.payment_status === "paid") {
-      return NextResponse.json({ ok: true, idempotent: true, responseId });
-    }
-    const updated = await markResponsePaid(responseId, "");
-    if (!updated) {
-      // Return 5xx so Dodo retries the delivery — a paid customer must never
-      // be left unpaid because the database blinked.
-      console.error("[dodo-webhook] could not mark paid; asking Dodo to retry", { responseId });
-      return NextResponse.json({ ok: false, error: "could not persist payment; retry" }, { status: 503 });
-    }
-    return NextResponse.json({ ok: true, updated, responseId });
+    return NextResponse.json({ ok: true, outcome });
   }
 
-  if (type === "payment.failed") {
-    console.log("[dodo-webhook] payment.failed", { responseId });
-    return NextResponse.json({ ok: true });
+  if (type in REVOKE) {
+    try {
+      const target = REVOKE[type];
+      // A won/cancelled/expired dispute restores access only to rows still marked disputed.
+      const changed = await setPaymentStatus({ paymentId, responseId }, target, target === "paid" ? "disputed" : undefined);
+      if (changed === 0) console.warn(`[dodo-webhook] ${type}: no matching response for payment ${paymentId ?? "none"}`);
+      return NextResponse.json({ ok: true, changed });
+    } catch (err) {
+      if (err instanceof SupabaseUnavailableError) {
+        return NextResponse.json({ ok: false, error: "temporarily unavailable; retry" }, { status: 503 });
+      }
+      console.error(`[dodo-webhook] ${type} update failed:`, err instanceof Error ? err.message : err);
+      return NextResponse.json({ ok: false }, { status: 503 });
+    }
   }
 
-  if (type === "payment.cancelled" || type === "payment.canceled") {
-    console.log("[dodo-webhook] payment.cancelled", { responseId });
-    return NextResponse.json({ ok: true });
-  }
-
+  // payment.failed, payment.cancelled, payment.processing and anything else: nothing to do.
   return NextResponse.json({ ok: true, ignored: type });
 }
 
 export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    message: "Dodo Payments webhook endpoint. POST signed events here.",
-  });
+  return NextResponse.json({ ok: true, message: "Dodo Payments webhook endpoint. POST signed events here." });
 }

@@ -128,34 +128,46 @@ export function calculateAxisScores(answers: ScoredAnswer[]): AxisScores {
  * centroid, and gets misfiled. Direction matching classifies by *pattern*,
  * which is what an archetype is.
  */
-export function matchArchetype(scores: AxisScores): MatchResult {
+export interface RankedArchetype {
+  archetype: Archetype;
+  /** Unrounded cosine between the respondent's direction and the archetype's. */
+  cos: number;
+  /** Euclidean distance to the centroid (tie-break and reporting only). */
+  distance: number;
+}
+
+/**
+ * The single ranking every view uses (verdict, blend, runner-up), so they can
+ * never disagree. Ranked on the UNROUNDED cosine; a perfectly neutral
+ * respondent (all cosines 0) falls back to nearest centroid, then to a fixed
+ * archetype order, so the result is always deterministic.
+ */
+export function rankArchetypes(scores: AxisScores): RankedArchetype[] {
   const v = AXES.map((ax) => scores[ax] - 50);
   const vNorm = Math.hypot(...v);
+  return archetypes
+    .map((a, index) => {
+      const c = getCentroid(a);
+      const dir = AXES.map((ax) => c[ax] - 50);
+      const dNorm = Math.hypot(...dir) || 1;
+      const cos = vNorm < 1e-6 ? 0 : v.reduce((s, x, i) => s + x * dir[i], 0) / (vNorm * dNorm);
+      const distance = Math.hypot(...AXES.map((ax) => scores[ax] - c[ax]));
+      return { archetype: a, cos, distance, index };
+    })
+    .sort((a, b) => (b.cos - a.cos) || (a.distance - b.distance) || (a.index - b.index))
+    .map(({ archetype, cos, distance }) => ({ archetype, cos, distance }));
+}
 
-  const ranked = archetypes.map((a) => {
-    const c = getCentroid(a);
-    const dir = AXES.map((ax) => c[ax] - 50);
-    const dNorm = Math.hypot(...dir) || 1;
-    const cos = vNorm < 1e-6 ? 0 : v.reduce((s, x, i) => s + x * dir[i], 0) / (vNorm * dNorm);
-    const distance = Math.hypot(...AXES.map((ax) => scores[ax] - c[ax]));
-    return { archetype: a, fit: Math.round(100 * cos), distance };
-  });
-
-  // Primary sort by fit; a perfectly neutral respondent (all fits 0) falls
-  // back to nearest centroid so the result is still deterministic.
-  ranked.sort((a, b) => (b.fit - a.fit) || (a.distance - b.distance));
-
-  const best = ranked[0];
-  const second = ranked[1];
-  const gap = best.fit - second.fit;
-
+export function matchArchetype(scores: AxisScores): MatchResult {
+  const [best, second] = rankArchetypes(scores);
+  const gap = Math.round(100 * (best.cos - second.cos));
   return {
     archetype: best.archetype,
     scores,
-    fit: best.fit,
+    fit: Math.round(100 * best.cos),
     distance: best.distance,
     runnerUp: second.archetype,
-    runnerUpFit: second.fit,
+    runnerUpFit: Math.round(100 * second.cos),
     runnerUpDistance: second.distance,
     gap,
     needsTiebreaker: gap < BORDERLINE_GAP,

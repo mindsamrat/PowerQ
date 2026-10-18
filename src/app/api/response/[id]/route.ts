@@ -1,31 +1,34 @@
 import { NextResponse } from "next/server";
-import { getResponseById } from "@/lib/supabase-server";
+import { isResponseId, lookupResponse } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
 
+const NO_STORE = { "Cache-Control": "private, no-store" };
+
 /**
- * Lightweight read-only endpoint used by the /paid page to poll for
- * payment status while the Dodo webhook flips the row from `unpaid` -> `paid`.
- *
- * Returns only the fields the client needs; never echoes user_agent / ip.
+ * Read-only status endpoint polled by /paid and the results page. Returns
+ * only what those pages need — never name, email, answers, free text or IP.
  */
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  if (!id) return NextResponse.json({ error: "missing id" }, { status: 400 });
+  if (!isResponseId(id)) return NextResponse.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 
-  const row = await getResponseById(id);
-  if (!row) return NextResponse.json({ error: "not found" }, { status: 404 });
+  const lookup = await lookupResponse(id, "id, archetype_id, pq_score, scores, payment_status, paid_at");
+  if (lookup.status === "missing") return NextResponse.json({ error: "not found" }, { status: 404, headers: NO_STORE });
+  if (lookup.status !== "ok") {
+    return NextResponse.json({ error: "temporarily unavailable" }, { status: 503, headers: { ...NO_STORE, "Retry-After": "15" } });
+  }
 
-  return NextResponse.json({
-    id: row.id,
-    archetype_id: row.archetype_id,
-    pq_score: row.pq_score,
-    scores: row.scores,
-    payment_status: row.payment_status,
-    pdf_url: row.pdf_url,
-    paid_at: row.paid_at,
-  });
+  const row = lookup.row;
+  return NextResponse.json(
+    {
+      id: row.id,
+      archetype_id: row.archetype_id,
+      pq_score: row.pq_score,
+      scores: row.scores,
+      payment_status: row.payment_status,
+      paid_at: row.paid_at,
+    },
+    { headers: NO_STORE }
+  );
 }
