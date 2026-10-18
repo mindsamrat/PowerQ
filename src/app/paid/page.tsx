@@ -50,8 +50,8 @@ function PaidPage() {
           return;
         }
 
-        if (attempts >= 20) {
-          // ~60 seconds elapsed. Webhook usually fires within 5s. Show a
+        if (attempts >= 30) {
+          // ~70 seconds elapsed. Webhook usually fires within 5s. Show a
           // graceful 'still processing' state with a manual refresh option.
           setState({
             status: "pending",
@@ -61,7 +61,8 @@ function PaidPage() {
           return;
         }
 
-        window.setTimeout(poll, 3000);
+        // Poll quickly while the webhook is most likely to land, then ease off.
+        window.setTimeout(poll, attempts < 12 ? 1500 : 3000);
       } catch {
         if (cancelled) return;
         setState({ status: "error", message: "We couldn't verify the payment. Email hello@wayofgods.com if this persists." });
@@ -115,6 +116,14 @@ function PaidPage() {
             >
               Open My Full Report
             </a>
+            <p className="mt-4">
+              <a
+                href={`${state.pdfUrl}&download=1`}
+                className="text-text-muted/60 hover:text-text-muted text-xs tracking-wide font-[family-name:var(--font-body)] underline underline-offset-4 decoration-1"
+              >
+                Save the PDF to my device instead
+              </a>
+            </p>
 
             <div className="mt-14 pt-8 border-t border-divider-dark">
               <p className="text-[10px] tracking-[0.3em] uppercase mb-3 font-[family-name:var(--font-body)]" style={{ color: "rgba(201,168,76,0.85)" }}>

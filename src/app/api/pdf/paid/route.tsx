@@ -31,11 +31,13 @@ async function renderPaidPdf(req: Request) {
   if (row.payment_status !== "paid") return new Response("Payment required", { status: 402 });
 
   const { pdf, filename } = await renderPaidReport(row);
+  // ?download=1 forces a file save; the default opens inline in the browser.
+  const disposition = searchParams.get("download") === "1" ? "attachment" : "inline";
   return new Response(new Uint8Array(pdf), {
     status: 200,
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
+      "Content-Disposition": `${disposition}; filename="${filename}"`,
       "Cache-Control": "private, no-store",
     },
   });

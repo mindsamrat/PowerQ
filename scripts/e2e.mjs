@@ -132,6 +132,16 @@ const cardSrc = await page.getAttribute("img[alt$='shareable card']", "src");
 const cardRes = await ctx.request.get(`${BASE}${cardSrc}`);
 ok(cardRes.status() === 200 && (cardRes.headers()["content-type"] ?? "").includes("image/png"), "share card 200 image/png");
 
+// Purchase path: teaser near the top, sticky bar on scroll, graceful errors.
+ok((resultsText.match(/Unlock Full Report/g) ?? []).length >= 2, "buy button appears both near the top and in the full card");
+ok(/one-time/i.test(resultsText) && /instant PDF/i.test(resultsText), "price and instant-delivery copy present");
+ok(/How The \w+ loses/i.test(resultsText) || /loses/i.test(resultsText), "locked preview of report content shown");
+await page.evaluate(() => window.scrollTo(0, 1500));
+await page.waitForTimeout(700);
+ok(await page.locator("[data-sticky-unlock]").isVisible().catch(() => false), "sticky unlock bar appears after scrolling");
+await page.evaluate(() => window.scrollTo(0, 0));
+await page.waitForTimeout(300);
+
 await page.click('button:has-text("Unlock Full Report")');
 await page.waitForTimeout(1500);
 const afterCheckout = await page.locator("body").innerText();

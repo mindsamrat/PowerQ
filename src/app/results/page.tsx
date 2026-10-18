@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -30,7 +30,7 @@ import {
   type ConsistencyResult,
   type DerivedReading,
 } from "@/lib/result-analysis";
-import { PAID_REPORT_PAGES } from "@/data/report-meta";
+import { PAID_REPORT_PAGES, REPORT_PRICE_LABEL } from "@/data/report-meta";
 
 function clamp(raw: string | null, fallback = 50): number {
   if (!raw) return fallback;
@@ -56,6 +56,9 @@ export default function ResultsPageWrapper() {
 /** Holds a completed submission the quiz page could not save. Must match quiz/page.tsx. */
 const PENDING_KEY = "pq_pending_submit_v1";
 const PENDING_MAX_AGE_MS = 1000 * 60 * 60 * 48;
+/** Last saved response, so a revisit or a new tab can still buy the report. Must match quiz/page.tsx. */
+const LAST_RESPONSE_KEY = "pq_last_response_v1";
+const LAST_RESPONSE_MAX_AGE_MS = 1000 * 60 * 60 * 48;
 
 type SaveStatus = "ok" | "retrying" | "unsaved";
 
@@ -64,7 +67,7 @@ type SaveStatus = "ok" | "retrying" | "unsaved";
  * parked in localStorage. Retry it quietly here so a brief outage doesn't cost
  * the respondent their report — or us the lead.
  */
-function usePendingSubmitRecovery(): SaveStatus {
+function usePendingSubmitRecovery(archetypeId: string): SaveStatus {
   const [status, setStatus] = useState<SaveStatus>("ok");
 
   useEffect(() => {
@@ -101,6 +104,7 @@ function usePendingSubmitRecovery(): SaveStatus {
           if (res.ok && typeof body.responseId === "string" && body.responseId) {
             try {
               sessionStorage.setItem("pq_response_id", body.responseId);
+              localStorage.setItem(LAST_RESPONSE_KEY, JSON.stringify({ id: body.responseId, archetypeId, savedAt: Date.now() }));
               localStorage.removeItem(PENDING_KEY);
             } catch { /* ignore */ }
             if (!cancelled) setStatus("ok");
@@ -114,7 +118,7 @@ function usePendingSubmitRecovery(): SaveStatus {
     })();
 
     return () => { cancelled = true; };
-  }, []);
+  }, [archetypeId]);
 
   return status;
 }
@@ -144,9 +148,10 @@ function SaveStatusNotice({ status }: { status: SaveStatus }) {
 
 function ResultsPage() {
   const params = useSearchParams();
-  const saveStatus = usePendingSubmitRecovery();
   const id = params.get("id") ?? "sovereign";
   const archetype = getArchetypeById(id) ?? archetypes[0];
+  const saveStatus = usePendingSubmitRecovery(archetype.id);
+  const purchase = usePurchaseState(archetype.id, saveStatus);
   const scores: Record<AxisId, number> = useMemo(
     () => ({
       control: clamp(params.get("c")),
@@ -199,13 +204,13 @@ function ResultsPage() {
         </span>
       </div>
 
-      <div className="relative z-10 max-w-lg mx-auto px-6 pb-24">
+      <div className="relative z-10 max-w-lg mx-auto px-6 pb-40">
         <RevealSection archetype={archetype} pq={pq} />
         <SaveStatusNotice status={saveStatus} />
         <Divider />
         <ConfidenceSection confidence={confidence} match={match} accent={archetype.cardAccent} />
         <Divider />
-        <DoctrineSection archetype={archetype} />
+        <UnlockTeaser archetype={archetype} purchase={purchase} saveStatus={saveStatus} />
         <Divider />
         <BlendSection blend={blend} accent={archetype.cardAccent} />
         <Divider />
@@ -231,9 +236,11 @@ function ResultsPage() {
         <Divider />
         <WeaknessSection archetype={archetype} />
         <Divider />
+        <DoctrineSection archetype={archetype} />
+        <Divider />
         <ShareCardSection archetype={archetype} cardUrl={cardUrl} />
         <Divider />
-        <UpsellSection archetype={archetype} scores={scores} pq={pq} saveStatus={saveStatus} />
+        <UpsellSection archetype={archetype} scores={scores} pq={pq} saveStatus={saveStatus} purchase={purchase} />
         <Divider />
         <ComparisonSection archetype={archetype} />
 
@@ -243,6 +250,7 @@ function ResultsPage() {
           </span>
         </div>
       </div>
+      <StickyUnlockBar archetype={archetype} purchase={purchase} saveStatus={saveStatus} />
     </main>
   );
 }
@@ -957,103 +965,347 @@ function ShareCardSection({
   );
 }
 
+// ---------- Paid report: purchase state shared by every buy button ----------
+
+interface PurchaseState {
+  responseId: string | null;
+  paid: boolean;
+  /** true once the server has been asked whether this response is already paid. */
+  checked: boolean;
+}
+
+/**
+ * sessionStorage first (same tab), then a 48-hour localStorage fallback so a
+ * revisit or a new tab can still buy — restricted to the same archetype so a
+ * stale id can never be attached to someone else's result.
+ */
+function resolveResponseId(archetypeId: string): string | null {
+  try {
+    const fromSession = sessionStorage.getItem("pq_response_id");
+    if (fromSession) return fromSession;
+    const raw = localStorage.getItem(LAST_RESPONSE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { id?: string; archetypeId?: string; savedAt?: number };
+    if (
+      typeof parsed.id !== "string" ||
+      parsed.archetypeId !== archetypeId ||
+      typeof parsed.savedAt !== "number" ||
+      Date.now() - parsed.savedAt > LAST_RESPONSE_MAX_AGE_MS
+    ) return null;
+    sessionStorage.setItem("pq_response_id", parsed.id);
+    return parsed.id;
+  } catch {
+    return null;
+  }
+}
+
+function usePurchaseState(archetypeId: string, saveStatus: SaveStatus): PurchaseState {
+  const [state, setState] = useState<PurchaseState>({ responseId: null, paid: false, checked: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    const responseId = resolveResponseId(archetypeId);
+    if (!responseId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- storage hydration on mount
+      setState({ responseId: null, paid: false, checked: true });
+      return;
+    }
+    setState({ responseId, paid: false, checked: false });
+    fetch(`/api/response/${encodeURIComponent(responseId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (!cancelled) setState({ responseId, paid: body?.payment_status === "paid", checked: true }); })
+      .catch(() => { if (!cancelled) setState({ responseId, paid: false, checked: true }); });
+    return () => { cancelled = true; };
+  }, [archetypeId, saveStatus]);
+
+  return state;
+}
+
+function blockedMessage(saveStatus: SaveStatus): string {
+  return saveStatus === "retrying"
+    ? "Still saving your profile — give it a few seconds and try again."
+    : saveStatus === "unsaved"
+      ? "We could not store your profile a moment ago, so the report cannot be prepared yet. Refresh this page to retry."
+      : "This link has lost its session. Retake the assessment to unlock the report.";
+}
+
+/** Starts hosted checkout. Resolves to an error message, or null once navigation has begun. */
+async function openCheckout(responseId: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/checkout/dodo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ responseId }),
+    });
+    const text = await res.text();
+    let body: { checkoutUrl?: string; error?: string } = {};
+    try { body = JSON.parse(text); } catch { /* keep raw */ }
+    if (!res.ok || !body.checkoutUrl) {
+      console.error("[checkout] failed", res.status, text.slice(0, 300));
+      return body.error ?? "Checkout is unavailable right now. Please try again in a moment.";
+    }
+    window.location.href = body.checkoutUrl;
+    return null;
+  } catch (err) {
+    console.error("[checkout] network error", err);
+    return "Could not reach the checkout. Check your connection and try again.";
+  }
+}
+
+function useCheckout(purchase: PurchaseState, saveStatus: SaveStatus) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const start = useCallback(async () => {
+    setError(null);
+    if (!purchase.responseId) {
+      setError(blockedMessage(saveStatus));
+      return;
+    }
+    setLoading(true);
+    const err = await openCheckout(purchase.responseId);
+    if (err) {
+      setError(err);
+      setLoading(false);
+    }
+  }, [purchase.responseId, saveStatus]);
+  return { loading, error, start };
+}
+
+const INCLUDED = [
+  "The seven laws for your type",
+  "Three ways you lose, named",
+  "Your 90-day roadmap",
+  "Every answer, scored",
+  "Who amplifies and drains you",
+  "Where your answers contradict",
+];
+
+function OwnedCard({ responseId, compact }: { responseId: string; compact?: boolean }) {
+  return (
+    <div className={`glass rounded-2xl border-gradient text-center ${compact ? "p-6" : "p-8 md:p-10"}`}>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-gold/80 mb-3 font-[family-name:var(--font-body)]">
+        You own this report
+      </p>
+      <h3 className="font-[family-name:var(--font-heading)] text-2xl font-bold text-text-primary mb-5">
+        Your full report is ready.
+      </h3>
+      <Link
+        href={`/paid?response_id=${encodeURIComponent(responseId)}`}
+        className="inline-block bg-accent hover:bg-accent-light text-white font-semibold text-sm py-3.5 px-8 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] glow-accent btn-shine"
+      >
+        Open my report
+      </Link>
+    </div>
+  );
+}
+
+/** Compact buy card shown right after the verdict, where motivation peaks. */
+function UnlockTeaser({ archetype, purchase, saveStatus }: { archetype: Archetype; purchase: PurchaseState; saveStatus: SaveStatus }) {
+  const { loading, error, start } = useCheckout(purchase, saveStatus);
+  if (purchase.paid && purchase.responseId) {
+    return <section><OwnedCard responseId={purchase.responseId} compact /></section>;
+  }
+  return (
+    <section>
+      <div className="glass rounded-2xl p-6 md:p-7 border-gradient relative overflow-hidden" style={{ borderColor: `${archetype.cardAccent}40` }}>
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="min-w-0">
+            <p className="text-[10px] tracking-[0.3em] uppercase text-accent/70 mb-1.5 font-[family-name:var(--font-body)]">
+              Your full report
+            </p>
+            <h3 className="font-[family-name:var(--font-heading)] text-xl md:text-2xl font-bold text-text-primary leading-tight">
+              {PAID_REPORT_PAGES} pages on being {archetype.name.replace(/^The /, "a ")}.
+            </h3>
+          </div>
+          <div className="text-right shrink-0">
+            <p className="font-[family-name:var(--font-heading)] text-3xl font-bold text-gold leading-none">{REPORT_PRICE_LABEL}</p>
+            <p className="text-[10px] text-text-muted/40 font-[family-name:var(--font-body)] mt-1">one-time</p>
+          </div>
+        </div>
+        <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5 mb-5">
+          {INCLUDED.map((item) => (
+            <li key={item} className="text-xs text-text-primary/75 font-[family-name:var(--font-body)] leading-snug">
+              <span style={{ color: archetype.cardAccent }}>· </span>{item}
+            </li>
+          ))}
+        </ul>
+        <button
+          onClick={start}
+          disabled={loading}
+          className="w-full text-center bg-accent hover:bg-accent-light disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm py-4 rounded-xl font-[family-name:var(--font-body)] transition-all duration-300 cursor-pointer glow-accent btn-shine"
+        >
+          {loading ? "Opening secure checkout…" : `Unlock Full Report — ${REPORT_PRICE_LABEL}`}
+        </button>
+        {error && <p className="text-accent text-xs mt-3 text-center font-[family-name:var(--font-body)]">{error}</p>}
+        <p className="text-text-muted/40 text-[11px] mt-3 text-center italic font-[family-name:var(--font-body)]">
+          Instant PDF · secure checkout · no subscription
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/** Bottom bar that keeps the buy option on screen once the reader scrolls past the verdict. */
+function StickyUnlockBar({ archetype, purchase, saveStatus }: { archetype: Archetype; purchase: PurchaseState; saveStatus: SaveStatus }) {
+  const { loading, error, start } = useCheckout(purchase, saveStatus);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const anchor = document.getElementById("paid-report");
+    let anchorInView = false;
+    const update = () => setVisible(window.scrollY > 700 && !anchorInView);
+    const observer = anchor
+      ? new IntersectionObserver(([entry]) => { anchorInView = entry.isIntersecting; update(); }, { threshold: 0.15 })
+      : null;
+    if (anchor && observer) observer.observe(anchor);
+    window.addEventListener("scroll", update, { passive: true });
+    update();
+    return () => { window.removeEventListener("scroll", update); observer?.disconnect(); };
+  }, []);
+
+  if (!visible) return null;
+  return (
+    <div data-sticky-unlock className="fixed bottom-0 inset-x-0 z-30 px-3 pb-3 pointer-events-none">
+      <div
+        className="max-w-lg mx-auto rounded-2xl px-4 py-3 pointer-events-auto"
+        style={{
+          background: "rgba(14,11,13,0.94)",
+          backdropFilter: "blur(14px)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          boxShadow: "0 -8px 40px rgba(0,0,0,0.55)",
+        }}
+      >
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] tracking-[0.2em] uppercase text-text-muted/50 font-[family-name:var(--font-body)]">
+              Full {PAID_REPORT_PAGES}-page report
+            </p>
+            <p className="text-sm font-[family-name:var(--font-heading)] font-bold text-text-primary truncate">
+              {archetype.name} · {REPORT_PRICE_LABEL}, instant PDF
+            </p>
+          </div>
+          {purchase.paid && purchase.responseId ? (
+            <Link
+              href={`/paid?response_id=${encodeURIComponent(purchase.responseId)}`}
+              className="shrink-0 bg-accent hover:bg-accent-light text-white font-semibold text-sm px-5 py-3 rounded-xl font-[family-name:var(--font-body)] transition-colors"
+            >
+              Open report
+            </Link>
+          ) : (
+            <button
+              onClick={start}
+              disabled={loading}
+              className="shrink-0 bg-accent hover:bg-accent-light disabled:opacity-50 text-white font-semibold text-sm px-5 py-3 rounded-xl font-[family-name:var(--font-body)] transition-colors cursor-pointer glow-accent"
+            >
+              {loading ? "Opening…" : "Unlock"}
+            </button>
+          )}
+        </div>
+        {error && <p className="text-accent text-[11px] mt-2 font-[family-name:var(--font-body)]">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
 function UpsellSection({
   archetype,
   scores,
   pq,
   saveStatus,
+  purchase,
 }: {
   archetype: Archetype;
   scores: Record<AxisId, number>;
   pq: number;
   saveStatus: SaveStatus;
+  purchase: PurchaseState;
 }) {
   return (
     <section className="flex flex-col gap-8">
-      <PaidUnlockCard archetype={archetype} saveStatus={saveStatus} />
+      <PaidUnlockCard archetype={archetype} saveStatus={saveStatus} purchase={purchase} />
       <FreePdfSection archetype={archetype} scores={scores} pq={pq} />
     </section>
   );
 }
 
-function PaidUnlockCard({ archetype, saveStatus }: { archetype: Archetype; saveStatus: SaveStatus }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+const REPORT_CONTENTS = [
+  "Standard profile sheet: 25 variables, same layout for everyone",
+  "Four per-axis deep dives with the answers that produced each score",
+  "How you win, how you lose, and the shadow gift",
+  "Who amplifies you, who drains you, and your natural enemy's playbook",
+  "The seven laws and a 90-day roadmap for your type",
+  "Where your axes interact and where your answers contradict",
+  "Every one of your 27 answers, scored and cited to its framework",
+  "A personal closing letter, watermarked to you",
+];
 
-  const startCheckout = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const responseId =
-        typeof window !== "undefined"
-          ? sessionStorage.getItem("pq_response_id")
-          : null;
+function PaidUnlockCard({ archetype, saveStatus, purchase }: { archetype: Archetype; saveStatus: SaveStatus; purchase: PurchaseState }) {
+  const { loading, error, start } = useCheckout(purchase, saveStatus);
 
-      if (!responseId) {
-        setError(
-          saveStatus === "retrying"
-            ? "Still saving your profile — give it a few seconds and try again."
-            : saveStatus === "unsaved"
-              ? "We could not store your profile a moment ago, so the report cannot be prepared yet. Refresh this page to retry."
-              : "This link has lost its session. Retake the assessment to unlock the report."
-        );
-        setLoading(false);
-        return;
-      }
-
-      const res = await fetch("/api/checkout/dodo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ responseId }),
-      });
-      const text = await res.text();
-      let body: { checkoutUrl?: string; error?: string } = {};
-      try { body = JSON.parse(text); } catch { /* keep raw */ }
-
-      if (!res.ok || !body.checkoutUrl) {
-        console.error("[checkout] failed", res.status, text.slice(0, 300));
-        setError(
-          body.error ?? "Checkout is unavailable right now. Please try again in a moment."
-        );
-        setLoading(false);
-        return;
-      }
-      window.location.href = body.checkoutUrl;
-    } catch (err) {
-      console.error("[checkout] network error", err);
-      setError("Could not reach the checkout. Check your connection and try again.");
-      setLoading(false);
-    }
-  };
+  if (purchase.paid && purchase.responseId) {
+    return <div id="paid-report"><OwnedCard responseId={purchase.responseId} /></div>;
+  }
 
   return (
-    <div className="glass rounded-2xl p-8 md:p-10 border-gradient relative overflow-hidden">
+    <div id="paid-report" className="glass rounded-2xl p-7 md:p-10 border-gradient relative overflow-hidden">
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[300px] h-[200px] bg-accent/[0.03] rounded-full blur-[80px]" />
-      <div className="relative text-center">
-        <p className="text-[10px] tracking-[0.3em] uppercase text-accent/60 mb-3 font-[family-name:var(--font-body)]">
-          Full PQ Report — $3
-        </p>
-        <h3 className="font-[family-name:var(--font-heading)] text-2xl md:text-3xl font-bold text-text-primary mb-2">
-          Unlock your full analysis.
-        </h3>
-        <p className="text-text-muted/50 text-sm mb-8 font-[family-name:var(--font-body)] max-w-sm mx-auto">
-          A {PAID_REPORT_PAGES}-page personalized report: {archetype.name} across love, money,
-          leadership, enemies, and legacy. Quotes your actual answers, shows
-          the numbers behind every score, and uses the same structure for
-          everyone so you can compare with friends. Watermarked to your email.
-        </p>
+      <div className="relative">
+        <div className="text-center">
+          <p className="text-[10px] tracking-[0.3em] uppercase text-accent/60 mb-3 font-[family-name:var(--font-body)]">
+            Full PQ Report — {REPORT_PRICE_LABEL}
+          </p>
+          <h3 className="font-[family-name:var(--font-heading)] text-2xl md:text-3xl font-bold text-text-primary mb-2">
+            Unlock your full analysis.
+          </h3>
+          <p className="text-text-muted/50 text-sm mb-6 font-[family-name:var(--font-body)] max-w-sm mx-auto">
+            {PAID_REPORT_PAGES} pages built from your 27 answers. Same structure for every reader, so you can compare with anyone who takes it.
+          </p>
+        </div>
+
+        {/* Locked preview: the first failure mode in full, the rest blurred. */}
+        <div className="relative rounded-xl p-5 mb-6 overflow-hidden" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+          <p className="text-[10px] tracking-[0.25em] uppercase text-text-muted/50 mb-3 font-[family-name:var(--font-body)]">
+            From your report · How {archetype.name.replace(/^The /, "the ")} loses
+          </p>
+          {archetype.loseModes.map((mode, i) => (
+            <div key={i} className="mb-3">
+              <p className="text-sm font-[family-name:var(--font-heading)] font-bold text-text-primary">{i + 1}. {mode.label}</p>
+              <p
+                className="text-sm text-text-muted/70 font-[family-name:var(--font-body)] leading-relaxed"
+                style={i === 0 ? undefined : { filter: "blur(5px)", userSelect: "none" }}
+                aria-hidden={i !== 0}
+              >
+                {mode.text}
+              </p>
+            </div>
+          ))}
+          <div className="absolute inset-x-0 bottom-0 h-20 pointer-events-none" style={{ background: "linear-gradient(transparent, rgba(12,10,12,0.96))" }} />
+          <p className="absolute bottom-3 inset-x-0 text-center text-[10px] tracking-[0.2em] uppercase text-gold/80 font-[family-name:var(--font-body)]">
+            Two more inside, plus 24 pages
+          </p>
+        </div>
+
+        <ul className="space-y-1.5 mb-7">
+          {REPORT_CONTENTS.map((line) => (
+            <li key={line} className="flex items-start gap-2 text-sm text-text-primary/80 font-[family-name:var(--font-body)] leading-snug">
+              <span className="mt-[2px] shrink-0" style={{ color: archetype.cardAccent }}>✓</span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+
         <button
-          onClick={startCheckout}
+          onClick={start}
           disabled={loading}
-          className="w-full text-center bg-accent hover:bg-accent-light disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm py-4 rounded-xl font-[family-name:var(--font-body)] transition-all duration-300 cursor-pointer glow-accent btn-shine"
+          className="w-full text-center bg-accent hover:bg-accent-light disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-base py-4 rounded-xl font-[family-name:var(--font-body)] transition-all duration-300 cursor-pointer glow-accent btn-shine"
         >
-          {loading ? "Opening secure checkout…" : "Unlock Full Report — $3"}
+          {loading ? "Opening secure checkout…" : `Unlock Full Report — ${REPORT_PRICE_LABEL}`}
         </button>
         {error && (
-          <p className="text-accent text-xs mt-3 font-[family-name:var(--font-body)]">{error}</p>
+          <p className="text-accent text-xs mt-3 text-center font-[family-name:var(--font-body)]">{error}</p>
         )}
-        <p className="text-text-muted/40 text-[11px] mt-4 font-[family-name:var(--font-body)] italic">
-          Secure payment via Dodo. Instant download. No subscription.
+        <p className="text-text-muted/40 text-[11px] mt-4 text-center font-[family-name:var(--font-body)] italic">
+          Secure checkout by Dodo Payments · instant PDF · one-time, no subscription · if it fails to generate, full refund.
         </p>
       </div>
     </div>

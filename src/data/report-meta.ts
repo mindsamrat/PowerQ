@@ -5,3 +5,5 @@
  */
 export const PAID_REPORT_PAGES = 26;
 export const FREE_REPORT_PAGES = 4;
+/** Display price of the paid report. The real price is set on the Dodo product; keep these in sync. */
+export const REPORT_PRICE_LABEL = "$3";

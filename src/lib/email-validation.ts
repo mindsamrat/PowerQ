@@ -9,6 +9,21 @@ export interface EmailValidation {
   error?: string;
 }
 
+/**
+ * Large, well-known mailbox providers. Accepted without a DNS lookup: they
+ * cover the overwhelming majority of real sign-ups, and skipping DNS for them
+ * means a resolver outage can never block most respondents.
+ */
+const KNOWN_PROVIDERS = new Set([
+  "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.co.uk", "live.com", "msn.com",
+  "yahoo.com", "yahoo.co.uk", "yahoo.co.in", "yahoo.in", "ymail.com", "rocketmail.com",
+  "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "pm.me",
+  "zoho.com", "zohomail.in", "gmx.com", "gmx.net", "gmx.de", "web.de", "mail.com",
+  "yandex.com", "yandex.ru", "fastmail.com", "hey.com", "tutanota.com", "tuta.io",
+  "rediffmail.com", "qq.com", "163.com", "naver.com", "comcast.net", "verizon.net",
+  "att.net", "sbcglobal.net", "bellsouth.net", "cox.net", "charter.net",
+]);
+
 export function validateEmailFormat(raw: string): EmailValidation {
   const trimmed = raw.trim().toLowerCase();
   if (trimmed.length === 0) return { valid: false, error: "Enter your email." };
@@ -23,45 +38,61 @@ export function validateEmailFormat(raw: string): EmailValidation {
   return { valid: true, normalized: trimmed };
 }
 
+const LOOKUP_TIMEOUT_MS = 2500;
+/** Codes meaning "the resolver answered: this name/record does not exist". */
+const DEFINITIVE = new Set(["ENOTFOUND", "ENODATA"]);
+
+type LookupResult = { found: boolean; definitiveMiss: boolean };
+
+async function lookup<T>(fn: () => Promise<T[]>): Promise<LookupResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error("dns timeout"), { code: "ETIMEOUT" })), LOOKUP_TIMEOUT_MS);
+    });
+    const records = await Promise.race([fn(), timeout]);
+    return { found: records.length > 0, definitiveMiss: records.length === 0 };
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? "";
+    return { found: false, definitiveMiss: DEFINITIVE.has(code) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Does the domain accept mail? MX first, then A/AAAA per RFC 5321 §5.1. */
+async function domainResolves(domain: string): Promise<LookupResult> {
+  const mx = await lookup(() => dns.resolveMx(domain));
+  if (mx.found) return mx;
+  const a = await lookup(() => dns.resolve4(domain));
+  if (a.found) return a;
+  const aaaa = await lookup(() => dns.resolve6(domain));
+  if (aaaa.found) return aaaa;
+  return { found: false, definitiveMiss: mx.definitiveMiss && a.definitiveMiss && aaaa.definitiveMiss };
+}
+
 /**
- * Verify the domain has at least one mail server (MX or A record).
- * Returns false for fake-looking domains like `example.fakedomain123.com`.
- *
- * Server-side only — uses node:dns. Soft-fails (returns true) on transient
- * lookup errors so we don't reject legitimate users when DNS is flaky.
+ * Verify the domain has a mail server. Rejects only when we are confident the
+ * domain is fake: every lookup said "does not exist" AND the resolver is
+ * demonstrably working (a known-good canary domain resolves). A broken or
+ * offline resolver answers "does not exist" for everything; in that case we
+ * let the user through rather than block every sign-up.
  */
 export async function verifyMxRecord(email: string): Promise<boolean> {
   const domain = email.split("@")[1];
   if (!domain) return false;
+  if (KNOWN_PROVIDERS.has(domain)) return true;
 
-  // "Definitive" codes mean the resolver answered and the name/record does not
-  // exist. Anything else (timeout, SERVFAIL, EAI_AGAIN, no network) is a
-  // resolver problem, not the user's, so we let them through.
-  const DEFINITIVE = new Set(["ENOTFOUND", "ENODATA"]);
-  let sawTransientError = false;
+  const result = await domainResolves(domain);
+  if (result.found) return true;
+  if (!result.definitiveMiss) return true; // timeouts / SERVFAIL: resolver trouble, not the user's
 
-  const lookup = async <T,>(fn: () => Promise<T[]>): Promise<T[]> => {
-    try {
-      return await fn();
-    } catch (err) {
-      const code = (err as { code?: string }).code ?? "";
-      if (!DEFINITIVE.has(code)) sawTransientError = true;
-      return [];
-    }
-  };
-
-  const mx = await lookup(() => dns.resolveMx(domain));
-  if (mx.length > 0) return true;
-
-  // Some domains accept mail on the A record per RFC 5321 §5.1.
-  const a = await lookup(() => dns.resolve4(domain));
-  if (a.length > 0) return true;
-
-  const aaaa = await lookup(() => dns.resolve6(domain));
-  if (aaaa.length > 0) return true;
-
-  // Nothing found. Only reject if every lookup was a definitive "does not exist".
-  return sawTransientError;
+  const canary = await domainResolves("gmail.com");
+  if (!canary.found) {
+    console.warn("[email-validation] resolver cannot resolve gmail.com; skipping MX check for", domain);
+    return true;
+  }
+  return false;
 }
 
 /** Combined check: format + disposable + MX. Server-side only. */

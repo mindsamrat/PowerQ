@@ -19,6 +19,8 @@ const STORAGE_KEY = "pq_progress_v3";
 const STORAGE_MAX_AGE_MS = 1000 * 60 * 60 * 48; // 48 hours
 /** Holds a completed submission that could not be saved, for background retry. */
 const PENDING_KEY = "pq_pending_submit_v1";
+/** Last saved response id + archetype, read by the results page. Must match results/page.tsx. */
+const LAST_RESPONSE_KEY = "pq_last_response_v1";
 
 interface SubscribeResponse {
   ok?: boolean;
@@ -297,6 +299,12 @@ export default function QuizPage() {
       // Falls back to the local finalize() output if the server didn't echo one.
       const serverResult = body.result ?? null;
       const archetypeId = serverResult?.archetypeId ?? finalResult.match.archetype.id;
+      if (persisted) {
+        // Lets a revisit or a new tab still buy the report within 48 hours.
+        try {
+          localStorage.setItem(LAST_RESPONSE_KEY, JSON.stringify({ id: body.responseId, archetypeId, savedAt: Date.now() }));
+        } catch { /* ignore */ }
+      }
       const c = serverResult?.scores?.control ?? finalResult.scores.control;
       const v = serverResult?.scores?.visibility ?? finalResult.scores.visibility;
       const t = serverResult?.scores?.timeHorizon ?? finalResult.scores.timeHorizon;
