@@ -4,7 +4,6 @@ import { Suspense, useEffect, useMemo, useState, useSyncExternalStore } from "re
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
-  archetypes,
   axisLabels,
   axisNarratives,
   bandFor,
@@ -960,7 +959,7 @@ function ShareCardSection({
 
       {status === "error" && (
         <p className="text-accent-light text-xs text-center mt-3 font-[family-name:var(--font-body)]">
-          Sharing didn't work on this device. <a href={cardUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-4">Open the image</a> and save it instead.
+          Sharing didn&apos;t work on this device. <a href={cardUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-4">Open the image</a> and save it instead.
         </p>
       )}
     </section>
@@ -1262,7 +1261,7 @@ function UpsellSection({
 const REPORT_CONTENTS = [
   "Standard profile sheet: 25 variables, same layout for everyone",
   "Four per-axis deep dives with the answers that produced each score",
-  "How you win, how you lose, and the shadow gift",
+  "How you win and how you lose, named",
   "Who amplifies you, who drains you, and your natural enemy's playbook",
   "The seven laws and a 90-day roadmap for your type",
   "Where your axes interact and where your answers contradict",

@@ -1,4 +1,4 @@
-import { archetypes, getCentroid, axisLabels, type Archetype, type AxisId } from "@/data/archetypes";
+import { archetypes, axisLabels, type Archetype, type AxisId } from "@/data/archetypes";
 import { questions } from "@/data/questions";
 import { centredOptionVector, cosine, AXES as AXIS_ORDER } from "@/lib/archetype-insights";
 import { rankArchetypes } from "@/lib/scoring";

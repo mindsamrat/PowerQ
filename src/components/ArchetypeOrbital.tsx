@@ -42,13 +42,14 @@ export default function ArchetypeOrbital() {
     return {
       id: idFor(slug),
       title: a.name.replace(/^The /, ""),
-      date: `${a.rarity}% rare`,
+      // One rarity figure, clearly an estimate (see the archetype pages).
+      rarity: `est. ${a.rarity}% of people`,
       content: a.tagline,
       category: categoryById[slug],
       icon: iconById[slug],
       relatedIds: [idFor(a.enemyId)],
-      status: "completed",
-      energy: Math.round(((20 - a.rarity) / 14) * 60 + 40), // rarer = more energy, 40-100
+      // Rarer archetypes get a bigger halo. Purely decorative.
+      glow: Math.round(((20 - a.rarity) / 14) * 60 + 40),
       href: `/archetypes/${slug}`,
     };
   });

@@ -7,11 +7,12 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 // Read once per instance instead of on every request.
-let fontsPromise: Promise<[Buffer, Buffer]> | null = null;
+let fontsPromise: Promise<[Buffer, Buffer, Buffer]> | null = null;
 function loadFonts() {
   fontsPromise ??= Promise.all([
     readFile(join(process.cwd(), "node_modules/@fontsource/playfair-display/files/playfair-display-latin-700-normal.woff")),
     readFile(join(process.cwd(), "node_modules/@fontsource/dm-sans/files/dm-sans-latin-400-normal.woff")),
+    readFile(join(process.cwd(), "node_modules/@fontsource/playfair-display/files/playfair-display-latin-400-italic.woff")),
   ]).catch((err) => {
     fontsPromise = null;
     throw err;
@@ -43,7 +44,7 @@ export async function GET(req: Request) {
 
   const accent = archetype.cardAccent;
 
-  const [playfair, dmSans] = await loadFonts();
+  const [playfair, dmSans, playfairItalic] = await loadFonts();
 
   return new ImageResponse(
     (
@@ -127,6 +128,7 @@ export async function GET(req: Request) {
       headers: { "Cache-Control": "public, max-age=86400, s-maxage=2592000, immutable" },
       fonts: [
         { name: "Playfair", data: playfair, weight: 700, style: "normal" },
+        { name: "Playfair", data: playfairItalic, weight: 400, style: "italic" },
         { name: "DM Sans", data: dmSans, weight: 400, style: "normal" },
       ],
     }

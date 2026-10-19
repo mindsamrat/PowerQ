@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   buildQuizPlan,
@@ -8,23 +9,32 @@ import {
   emptyProgress,
   finalize,
   nextServableCursor,
-  remainingServedSteps,
+  progressInfo,
   type ChoiceAnswer,
   type FreeTextAnswer,
   type QuizProgress,
 } from "@/lib/quiz-engine";
 import { QUIZ_BANK_VERSION, type ChoiceQuestion, type EmailQuestion, type FreeTextQuestion, type OptionId, type Question } from "@/data/questions";
+import {
+  PROGRESS_KEY,
+  RETENTION_MS,
+  clearPending,
+  readAttribution,
+  resultSignature,
+  writePending,
+  writeSession,
+  type StoredAnswer,
+} from "@/lib/client-session";
+import { FREE_TEXT_MAX, NAME_MAX, sanitizeName, truncateCodePoints } from "@/lib/sanitize";
+import { suggestEmail } from "@/lib/email-suggest";
 
-const STORAGE_KEY = "pq_progress_v3";
-const STORAGE_MAX_AGE_MS = 1000 * 60 * 60 * 48; // 48 hours
-/** Holds a completed submission that could not be saved, for background retry. */
-const PENDING_KEY = "pq_pending_submit_v1";
-/** Last saved response id + archetype, read by the results page. Must match results/page.tsx. */
-const LAST_RESPONSE_KEY = "pq_last_response_v1";
+/** The server waits up to 30 s (DNS checks, database). Give it that, then move on. */
+const SUBMIT_TIMEOUT_MS = 25_000;
 
 interface SubscribeResponse {
   ok?: boolean;
   degraded?: boolean;
+  limited?: boolean;
   responseId?: string | null;
   error?: string;
   result?: {
@@ -32,7 +42,6 @@ interface SubscribeResponse {
     scores?: { control?: number; visibility?: number; timeHorizon?: number; powerSource?: number };
     pq?: number;
   } | null;
-  downloadUrl?: string;
 }
 
 interface StoredProgress {
@@ -45,20 +54,22 @@ interface StoredProgress {
 }
 
 function loadProgress(): StoredProgress | null {
-  if (typeof window === "undefined") return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(PROGRESS_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredProgress>;
     const stale =
       typeof parsed.savedAt !== "number" ||
-      Date.now() - parsed.savedAt > STORAGE_MAX_AGE_MS ||
+      Date.now() - parsed.savedAt > RETENTION_MS ||
       parsed.bankVersion !== QUIZ_BANK_VERSION ||
       !parsed.progress ||
+      !Array.isArray(parsed.progress.served) ||
+      !Array.isArray(parsed.progress.choiceAnswers) ||
+      !Array.isArray(parsed.progress.freeTextAnswers) ||
       typeof parsed.cursor !== "number" ||
       typeof parsed.seed !== "number";
     if (stale) {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(PROGRESS_KEY);
       return null;
     }
     return parsed as StoredProgress;
@@ -68,11 +79,14 @@ function loadProgress(): StoredProgress | null {
 }
 
 function saveProgress(progress: QuizProgress, cursor: number, seed: number) {
-  if (typeof window === "undefined") return;
   try {
     const payload: StoredProgress = { savedAt: Date.now(), bankVersion: QUIZ_BANK_VERSION, progress, cursor, seed };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  } catch { /* ignore */ }
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify(payload));
+  } catch { /* storage full or blocked: the quiz still works, it just won't resume */ }
+}
+
+function clearProgress() {
+  try { localStorage.removeItem(PROGRESS_KEY); } catch { /* ignore */ }
 }
 
 // ---------- Option-order randomisation ----------
@@ -112,9 +126,11 @@ function optionOrder(seed: number, questionId: string): number[] {
   return arr;
 }
 
-function clearProgress() {
-  if (typeof window === "undefined") return;
-  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+const OPTION_KEYS: Record<string, number> = { "1": 0, "2": 1, "3": 2, "4": 3, a: 0, b: 1, c: 2, d: 3 };
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
 }
 
 export default function QuizPage() {
@@ -128,6 +144,10 @@ export default function QuizPage() {
   // 0 until hydration so server and client render identical markup; a real
   // seed is chosen (or restored) on the client before the first question shows.
   const [seed, setSeed] = useState(0);
+  // State updates are asynchronous, so a fast double tap (or key + tap) can
+  // get through `transitioning`. The ref flips synchronously.
+  const busyRef = useRef(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     const saved = loadProgress();
@@ -147,56 +167,37 @@ export default function QuizPage() {
     if (cursor > 0 && cursor < plan.length) saveProgress(progress, cursor, seed);
   }, [progress, cursor, plan.length, hydrated, seed]);
 
+  // Each new step is a new page for a screen reader: move focus to its heading.
+  useEffect(() => {
+    if (!hydrated || !visible) return;
+    headingRef.current?.focus({ preventScroll: true });
+  }, [cursor, hydrated, visible]);
+
   const advance = useCallback(
     (nextProgress: QuizProgress) => {
       // Adaptive: pick the next question that actually needs to be served.
       // Right now this skips the tiebreaker block when the interim archetype
       // match has a clear gap to the runner-up.
       const candidate = nextServableCursor(cursor + 1, plan, nextProgress);
-
-      if (candidate < plan.length) {
-        setTransitioning(true);
-        setVisible(false);
+      busyRef.current = true;
+      setTransitioning(true);
+      setVisible(false);
+      window.setTimeout(() => {
+        setProgress(nextProgress);
+        setCursor(Math.min(candidate, plan.length - 1));
+        setVisible(true);
         window.setTimeout(() => {
-          setProgress(nextProgress);
-          setCursor(candidate);
-          setVisible(true);
-          window.setTimeout(() => setTransitioning(false), 50);
-        }, 320);
-      } else {
-        const finalResult = finalize(nextProgress);
-        clearProgress();
-        try {
-          sessionStorage.setItem("pq_freetext_v1", JSON.stringify(finalResult.freeText));
-          sessionStorage.setItem(
-            "pq_answers_v1",
-            JSON.stringify(
-              nextProgress.choiceAnswers.map((a) => ({
-                q: a.questionId,
-                o: a.optionId,
-                d: a.delta,
-                pos: a.pos,
-              }))
-            )
-          );
-        } catch { /* ignore */ }
-        const qs = new URLSearchParams({
-          id: finalResult.match.archetype.id,
-          c: String(finalResult.scores.control),
-          v: String(finalResult.scores.visibility),
-          t: String(finalResult.scores.timeHorizon),
-          p: String(finalResult.scores.powerSource),
-          pq: String(finalResult.pq),
-        });
-        router.push(`/results?${qs.toString()}`);
-      }
+          setTransitioning(false);
+          busyRef.current = false;
+        }, 50);
+      }, 320);
     },
-    [cursor, plan, router]
+    [cursor, plan]
   );
 
   const handleChoice = useCallback(
     (question: ChoiceQuestion, optionId: OptionId, pos?: number) => {
-      if (transitioning) return;
+      if (busyRef.current || transitioning) return;
       const answer: ChoiceAnswer = {
         questionId: question.id,
         optionId,
@@ -214,9 +215,10 @@ export default function QuizPage() {
 
   const handleFreeText = useCallback(
     (question: FreeTextQuestion, text: string | null) => {
-      if (transitioning) return;
-      const answers: FreeTextAnswer[] = text && text.trim().length > 0
-        ? [...progress.freeTextAnswers, { questionId: question.id, text: text.trim() }]
+      if (busyRef.current || transitioning) return;
+      const clean = text ? truncateCodePoints(text.trim(), FREE_TEXT_MAX).trim() : "";
+      const answers: FreeTextAnswer[] = clean.length > 0
+        ? [...progress.freeTextAnswers, { questionId: question.id, text: clean }]
         : progress.freeTextAnswers;
       advance({
         served: [...progress.served, question.id],
@@ -228,125 +230,118 @@ export default function QuizPage() {
   );
 
   const submitEmail = useCallback(
-    async (name: string, email: string): Promise<{ ok: boolean; error?: string }> => {
-      const finalResult = finalize(progress);
-      const payload = {
-        name,
-        email,
-        archetypeId: finalResult.match.archetype.id,
-        scores: finalResult.scores,
-        pq: finalResult.pq,
-        answers: progress.choiceAnswers.map((a) => ({ q: a.questionId, o: a.optionId, d: a.delta, pos: a.pos })),
-        freeText: progress.freeTextAnswers,
-        source: "free-pdf" as const,
-      };
+    async (fields: EmailFields): Promise<{ ok: boolean; error?: string }> => {
+      if (busyRef.current) return { ok: false, error: "Hold on — still working on the last step." };
+      busyRef.current = true;
+      try {
+        const finalResult = finalize(progress);
+        const answers: StoredAnswer[] = progress.choiceAnswers.map((a) => ({ q: a.questionId, o: a.optionId, d: a.delta, pos: a.pos }));
+        const payload = {
+          name: fields.name,
+          email: fields.email,
+          answers,
+          freeText: progress.freeTextAnswers,
+          marketingConsent: fields.marketingConsent,
+          attribution: readAttribution(),
+          website: fields.website,
+          source: "free-pdf" as const,
+        };
 
-      // Three outcomes worth telling apart:
-      //   ok          - saved, carry on
-      //   rejected    - the user must change something (bad email, rate limit)
-      //   unavailable - our side is down; their answers are still valid
-      const attempt = async (): Promise<{
-        status: "ok" | "rejected" | "unavailable";
-        body?: SubscribeResponse;
-        error?: string;
-      }> => {
+        // Three outcomes worth telling apart:
+        //   ok          - the server answered (saved, limited, or degraded)
+        //   rejected    - the user must change something (bad name/email)
+        //   unavailable - our side is down or slow; their answers are still valid
+        let outcome: { status: "ok" | "rejected" | "unavailable"; body?: SubscribeResponse; error?: string };
         try {
           const res = await fetch("/api/subscribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(SUBMIT_TIMEOUT_MS),
           });
           const body = (await res.json().catch(() => ({}))) as SubscribeResponse;
-          if (res.ok) return { status: "ok", body };
-          if (res.status >= 500) return { status: "unavailable", error: body.error };
-          return { status: "rejected", error: body.error };
+          if (res.ok) outcome = { status: "ok", body };
+          else if (res.status === 400) outcome = { status: "rejected", error: body.error };
+          else outcome = { status: "unavailable" };
         } catch {
-          return { status: "unavailable" };
+          outcome = { status: "unavailable" };
         }
-      };
 
-      let outcome = await attempt();
-      if (outcome.status === "unavailable") {
-        await new Promise((r) => window.setTimeout(r, 1200));
-        outcome = await attempt();
-      }
+        if (outcome.status === "rejected") {
+          return { ok: false, error: outcome.error ?? "Please check your name and email and try again." };
+        }
 
-      if (outcome.status === "rejected") {
-        return { ok: false, error: outcome.error ?? "Could not save your response. Try again." };
-      }
+        // From here we always show the result. The scores were computed on this
+        // device from the same question bank the server uses, so they are correct
+        // whether or not the save succeeded. Prefer the server's echo so the URL
+        // matches the stored row exactly.
+        const body = outcome.body ?? {};
+        const responseId = typeof body.responseId === "string" && body.responseId.length > 0 ? body.responseId : null;
+        const limited = outcome.status === "ok" && body.limited === true;
+        const serverResult = body.result ?? null;
+        const archetypeId = serverResult?.archetypeId ?? finalResult.match.archetype.id;
+        const control = serverResult?.scores?.control ?? finalResult.scores.control;
+        const visibility = serverResult?.scores?.visibility ?? finalResult.scores.visibility;
+        const timeHorizon = serverResult?.scores?.timeHorizon ?? finalResult.scores.timeHorizon;
+        const powerSource = serverResult?.scores?.powerSource ?? finalResult.scores.powerSource;
+        const pq = serverResult?.pq ?? finalResult.pq;
 
-      // From here we always show the result. The scores were computed on this
-      // device from the same question bank the server uses, so they are correct
-      // whether or not the save succeeded.
-      const body = outcome.body ?? {};
-      const persisted = typeof body.responseId === "string" && body.responseId.length > 0;
-
-      clearProgress();
-      try {
-        sessionStorage.setItem("pq_freetext_v1", JSON.stringify(progress.freeTextAnswers));
-        sessionStorage.setItem("pq_answers_v1", JSON.stringify(payload.answers));
-        if (persisted) {
-          sessionStorage.setItem("pq_response_id", body.responseId as string);
-          localStorage.removeItem(PENDING_KEY);
+        // The results page recomputes this signature from the URL below, so
+        // the session can only ever be used with this exact result.
+        const sig = resultSignature({ archetypeId, control, visibility, timeHorizon, powerSource, pq });
+        writeSession({ id: responseId, sig, archetypeId, answers, savedAt: Date.now(), limited: limited || undefined });
+        if (responseId || limited) {
+          clearPending();
         } else {
           // Queue the submission so the results page can retry in the
           // background. Nothing is lost if the database wakes up shortly.
-          localStorage.setItem(PENDING_KEY, JSON.stringify({ savedAt: Date.now(), payload }));
+          writePending(sig, payload);
         }
-      } catch { /* ignore */ }
+        clearProgress();
 
-      // Prefer the server-computed result so the URL matches Supabase.
-      // Falls back to the local finalize() output if the server didn't echo one.
-      const serverResult = body.result ?? null;
-      const archetypeId = serverResult?.archetypeId ?? finalResult.match.archetype.id;
-      if (persisted) {
-        // Lets a revisit or a new tab still buy the report within 48 hours.
-        try {
-          localStorage.setItem(LAST_RESPONSE_KEY, JSON.stringify({ id: body.responseId, archetypeId, savedAt: Date.now() }));
-        } catch { /* ignore */ }
+        const qs = new URLSearchParams({
+          id: archetypeId,
+          c: String(control),
+          v: String(visibility),
+          t: String(timeHorizon),
+          p: String(powerSource),
+          pq: String(pq),
+        });
+        router.push(`/results?${qs.toString()}`);
+        return { ok: true };
+      } finally {
+        busyRef.current = false;
       }
-      const c = serverResult?.scores?.control ?? finalResult.scores.control;
-      const v = serverResult?.scores?.visibility ?? finalResult.scores.visibility;
-      const t = serverResult?.scores?.timeHorizon ?? finalResult.scores.timeHorizon;
-      const p = serverResult?.scores?.powerSource ?? finalResult.scores.powerSource;
-      const pqVal = serverResult?.pq ?? finalResult.pq;
-
-      const qs = new URLSearchParams({
-        id: archetypeId,
-        c: String(c),
-        v: String(v),
-        t: String(t),
-        p: String(p),
-        pq: String(pqVal),
-      });
-      router.push(`/results?${qs.toString()}`);
-      return { ok: true };
     },
     [progress, router]
   );
 
-  const current = plan[cursor];
-  // The number of questions already answered + this one, vs the projected
-  // total once tiebreaker-skipping is accounted for. Stays honest if the
-  // adaptive engine skips a block mid-quiz.
-  const answeredCount = progress.choiceAnswers.length + progress.freeTextAnswers.length;
-  const step = answeredCount + 1;
-  const total = step + Math.max(0, remainingServedSteps(cursor + 1, plan, progress));
-  const progressPct = (step / total) * 100;
+  const current = plan[Math.min(cursor, plan.length - 1)];
+  const info = progressInfo(cursor, plan, progress);
 
   useEffect(() => {
     if (!hydrated || !current || current.kind === "free-text" || current.kind === "email") return;
     const order = optionOrder(seed, current.id);
     const handler = (e: KeyboardEvent) => {
-      const n = Number.parseInt(e.key, 10);
-      if (n >= 1 && n <= 4) {
-        const displayIndex = n - 1;
-        handleChoice(current, current.options[order[displayIndex]].id, displayIndex);
-      }
+      // Not while typing, not on auto-repeat, and never on Ctrl/Cmd/Alt+key
+      // (switching browser tabs must not answer a question).
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
+      const displayIndex = OPTION_KEYS[e.key.toLowerCase()];
+      if (displayIndex === undefined) return;
+      e.preventDefault();
+      handleChoice(current, current.options[order[displayIndex]].id, displayIndex);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [current, handleChoice, hydrated, seed]);
+
+  const stepLabel = !hydrated
+    ? " "
+    : info.kind === "choice"
+      ? `Question ${info.questionNumber} of ${info.questionTotal}`
+      : info.kind === "free-text"
+        ? "Optional"
+        : "Final step";
 
   return (
     <main className="min-h-screen bg-primary-bg bg-gradient-animate flex flex-col relative grain">
@@ -357,33 +352,43 @@ export default function QuizPage() {
         <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-accent/[0.02] rounded-full blur-[120px]" />
       </div>
 
-      <div className="relative z-10 w-full h-[2px] bg-divider-dark">
-        <div className="h-full bg-accent progress-fill" style={{ width: `${progressPct}%` }} />
+      <div
+        className="relative z-10 w-full h-[2px] bg-divider-dark"
+        role="progressbar"
+        aria-label="Assessment progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={hydrated ? Math.round(info.fraction * 100) : 0}
+      >
+        <div className="h-full bg-accent progress-fill" style={{ width: `${hydrated ? info.fraction * 100 : 0}%` }} />
       </div>
 
-      <div className="relative z-10 flex-1 flex flex-col">
+      <div className="relative z-10 flex-1 flex flex-col" aria-busy={!hydrated}>
         <div className="pt-6 pb-2 text-center">
-          <span className="text-[9px] tracking-[0.4em] uppercase text-text-muted/40 font-[family-name:var(--font-body)]">
+          <span className="text-[9px] tracking-[0.4em] uppercase text-text-muted font-[family-name:var(--font-body)]">
             PQ Assessment
           </span>
         </div>
 
         <div className="text-center pb-2">
-          <span className="text-[11px] text-text-muted/30 font-[family-name:var(--font-body)] tracking-wider">
-            {String(step).padStart(2, "0")} / {String(total).padStart(2, "0")}
+          <span className="text-[11px] text-text-muted font-[family-name:var(--font-body)] tracking-wider" aria-live="polite">
+            {stepLabel}
           </span>
         </div>
 
         <div className="flex-1 flex flex-col items-center justify-center px-5 max-w-xl mx-auto w-full pb-6">
           <div
             className={`w-full transition-all duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
-              visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"
+              visible && hydrated ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"
             }`}
           >
-            {!hydrated ? null : current.kind === "free-text" ? (
+            {!hydrated ? (
+              <StepSkeleton />
+            ) : current.kind === "free-text" ? (
               <FreeTextStep
                 key={current.id}
                 question={current}
+                headingRef={headingRef}
                 disabled={transitioning}
                 onSubmit={(text) => handleFreeText(current, text)}
               />
@@ -391,12 +396,14 @@ export default function QuizPage() {
               <EmailStep
                 key={current.id}
                 question={current}
+                headingRef={headingRef}
                 onSubmit={submitEmail}
               />
             ) : (
               <ChoiceStep
                 key={current.id}
                 question={current}
+                headingRef={headingRef}
                 order={optionOrder(seed, current.id)}
                 disabled={transitioning}
                 onChoose={(id, pos) => handleChoice(current, id, pos)}
@@ -406,7 +413,7 @@ export default function QuizPage() {
         </div>
 
         <div className="py-4 text-center">
-          <span className="text-[9px] text-text-muted/20 font-[family-name:var(--font-body)] tracking-wider">
+          <span className="text-[9px] text-text-muted font-[family-name:var(--font-body)] tracking-wider">
             No back button. Choose decisively.
           </span>
         </div>
@@ -415,36 +422,61 @@ export default function QuizPage() {
   );
 }
 
+/** Same footprint as a question, so nothing jumps when the real step appears. */
+function StepSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div className="h-7 rounded-md bg-white/[0.04] mx-auto w-3/4 mb-8" />
+      <div className="space-y-3">
+        {[0, 1, 2, 3].map((i) => <div key={i} className="h-[62px] rounded-xl glass" />)}
+      </div>
+    </div>
+  );
+}
+
+type HeadingRef = React.RefObject<HTMLHeadingElement | null>;
+
+const HEADING_CLASS =
+  "font-[family-name:var(--font-heading)] text-xl md:text-2xl font-semibold text-text-primary text-center leading-relaxed outline-none";
+const FOCUS_RING = "focus-visible:ring-2 focus-visible:ring-gold/70 focus-visible:ring-offset-2 focus-visible:ring-offset-primary-bg";
+const FIELD_CLASS = `w-full glass rounded-xl px-5 py-4 text-text-primary text-sm md:text-base font-[family-name:var(--font-body)] placeholder:text-text-muted focus:outline-none ${FOCUS_RING} aria-[invalid=true]:ring-2 aria-[invalid=true]:ring-accent/70`;
+const LABEL_CLASS = "block text-[10px] tracking-[0.25em] uppercase text-text-muted mb-2 font-[family-name:var(--font-body)]";
+
 function ChoiceStep({
   question,
   order,
   disabled,
+  headingRef,
   onChoose,
 }: {
   question: ChoiceQuestion;
   /** Indices into question.options, in display order. */
   order: number[];
   disabled: boolean;
+  headingRef: HeadingRef;
   onChoose: (id: OptionId, pos: number) => void;
 }) {
   return (
     <>
-      <h2 className="font-[family-name:var(--font-heading)] text-xl md:text-2xl font-semibold text-text-primary text-center mb-8 leading-relaxed glow-text">
+      <h1 ref={headingRef} tabIndex={-1} className={`${HEADING_CLASS} mb-8 glow-text`}>
         {question.prompt}
-      </h2>
-      <div className="space-y-3 stagger-children">
+      </h1>
+      <div className="space-y-3 stagger-children" role="group" aria-label="Answer options">
         {order.map((optionIndex, pos) => {
           const option = question.options[optionIndex];
+          const letter = String.fromCharCode(65 + pos);
           return (
             <button
               key={option.id}
+              type="button"
               onClick={() => onChoose(option.id, pos)}
               disabled={disabled}
-              className="w-full text-left p-4 md:p-5 rounded-xl glass option-card cursor-pointer"
+              aria-label={`${letter}. ${option.text}`}
+              className={`w-full text-left p-4 md:p-5 rounded-xl glass option-card cursor-pointer outline-none ${FOCUS_RING}`}
             >
               <div className="flex items-start gap-4">
-                <span className="text-[10px] text-accent/60 font-[family-name:var(--font-body)] mt-1 shrink-0 w-4 tracking-wider">
-                  {String.fromCharCode(65 + pos)}
+                <span aria-hidden="true" className="text-[10px] text-accent-light font-[family-name:var(--font-body)] mt-1 shrink-0 w-4 tracking-wider">
+                  {letter}
                 </span>
                 <span className="text-sm md:text-[15px] text-text-primary/90 font-[family-name:var(--font-body)] leading-relaxed">
                   {option.text}
@@ -454,83 +486,169 @@ function ChoiceStep({
           );
         })}
       </div>
+      <p className="sr-only">Keyboard: press 1 to 4, or A to D, to choose.</p>
     </>
   );
 }
 
+interface EmailFields {
+  name: string;
+  email: string;
+  marketingConsent: boolean;
+  /** Honeypot. Real people never see the field, so it stays empty. */
+  website: string;
+}
+
 function EmailStep({
   question,
+  headingRef,
   onSubmit,
 }: {
   question: EmailQuestion;
-  onSubmit: (name: string, email: string) => Promise<{ ok: boolean; error?: string }>;
+  headingRef: HeadingRef;
+  onSubmit: (fields: EmailFields) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [website, setWebsite] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  const suggestion = useMemo(() => suggestEmail(email), [email]);
+  const cleanName = sanitizeName(name);
+  const emailLooksComplete = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting) return;
+    if (submittingRef.current) return;
+    // The server applies the same rule; catching it here saves a round trip
+    // and a confusing bounce after 27 questions.
+    if (cleanName.length === 0) {
+      setError("Please enter your first name — letters only, no @ handles or links.");
+      return;
+    }
+    if (!emailLooksComplete) {
+      setError("That doesn't look like a complete email address.");
+      return;
+    }
+    submittingRef.current = true;
     setError(null);
     setSubmitting(true);
-    const result = await onSubmit(name.trim(), email.trim());
-    if (!result.ok) {
-      setError(result.error ?? "Something went wrong.");
+    try {
+      const result = await onSubmit({ name: cleanName, email: email.trim(), marketingConsent: consent, website });
+      if (!result.ok) setError(result.error ?? "Something went wrong. Please try again.");
+    } finally {
+      // On success the page navigates away; on failure the button must come back.
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
 
   return (
     <>
-      <p className="text-[10px] tracking-[0.3em] uppercase text-accent/60 text-center mb-4 font-[family-name:var(--font-body)]">
+      <p className="text-[10px] tracking-[0.3em] uppercase text-accent-light text-center mb-4 font-[family-name:var(--font-body)]">
         Final Step — Required
       </p>
-      <h2 className="font-[family-name:var(--font-heading)] text-xl md:text-2xl font-semibold text-text-primary text-center mb-3 leading-relaxed">
+      <h1 ref={headingRef} tabIndex={-1} className={`${HEADING_CLASS} mb-3`}>
         {question.prompt}
-      </h2>
-      <p className="text-text-muted/50 text-xs md:text-sm text-center mb-8 font-[family-name:var(--font-body)] italic max-w-sm mx-auto">
+      </h1>
+      <p className="text-text-muted text-xs md:text-sm text-center mb-8 font-[family-name:var(--font-body)] italic max-w-sm mx-auto">
         {question.subPrompt}
       </p>
 
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={question.namePrompt}
-          autoComplete="given-name"
-          required
-          autoFocus
-          maxLength={60}
-          disabled={submitting}
-          className="w-full glass rounded-xl px-5 py-4 text-text-primary text-sm md:text-base font-[family-name:var(--font-body)] placeholder:text-text-muted/30 focus:outline-none"
-        />
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder={question.emailPrompt}
-          autoComplete="email"
-          required
-          disabled={submitting}
-          className="w-full glass rounded-xl px-5 py-4 text-text-primary text-sm md:text-base font-[family-name:var(--font-body)] placeholder:text-text-muted/30 focus:outline-none"
-        />
-        {error && (
-          <p className="text-accent text-xs font-[family-name:var(--font-body)] text-center">{error}</p>
-        )}
+      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+        <div>
+          <label htmlFor="pq-name" className={LABEL_CLASS}>{question.namePrompt}</label>
+          <input
+            id="pq-name"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Priya"
+            autoComplete="given-name"
+            required
+            autoFocus
+            maxLength={NAME_MAX}
+            disabled={submitting}
+            aria-invalid={error !== null && cleanName.length === 0 ? true : undefined}
+            aria-describedby="pq-form-error"
+            className={FIELD_CLASS}
+          />
+        </div>
+        <div>
+          <label htmlFor="pq-email" className={LABEL_CLASS}>{question.emailPrompt}</label>
+          <input
+            id="pq-email"
+            type="email"
+            inputMode="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            autoComplete="email"
+            autoCapitalize="none"
+            spellCheck={false}
+            required
+            maxLength={254}
+            disabled={submitting}
+            aria-invalid={error !== null && !emailLooksComplete ? true : undefined}
+            aria-describedby="pq-email-hint pq-form-error"
+            className={FIELD_CLASS}
+          />
+          <p id="pq-email-hint" className="text-xs text-text-muted mt-2 font-[family-name:var(--font-body)] min-h-[1rem]" aria-live="polite">
+            {suggestion ? (
+              <>
+                Did you mean{" "}
+                <button
+                  type="button"
+                  onClick={() => setEmail(suggestion)}
+                  className={`text-gold-light underline underline-offset-2 cursor-pointer rounded ${FOCUS_RING}`}
+                >
+                  {suggestion}
+                </button>
+                ?
+              </>
+            ) : null}
+          </p>
+        </div>
+
+        {/* Honeypot: hidden from people and assistive tech; bots fill it in. */}
+        <div aria-hidden="true" className="absolute -left-[9999px] top-0 h-0 w-0 overflow-hidden">
+          <label htmlFor="pq-website">Website</label>
+          <input id="pq-website" type="text" name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
+        </div>
+
+        <label className="flex items-start gap-3 cursor-pointer select-text">
+          <input
+            type="checkbox"
+            checked={consent}
+            onChange={(e) => setConsent(e.target.checked)}
+            disabled={submitting}
+            className={`mt-0.5 h-4 w-4 shrink-0 accent-[#C41E3A] rounded ${FOCUS_RING}`}
+          />
+          <span className="text-xs text-text-muted font-[family-name:var(--font-body)] leading-relaxed">
+            Email me occasional notes from Way of Gods. Unsubscribe anytime.
+          </span>
+        </label>
+
+        <p id="pq-form-error" role="alert" aria-live="assertive" className="text-accent-light text-xs font-[family-name:var(--font-body)] text-center min-h-[1rem]">
+          {error}
+        </p>
+
         <button
           type="submit"
-          disabled={submitting || name.trim().length < 1 || email.length < 5}
-          className="bg-accent hover:bg-accent-light disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-sm py-4 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] cursor-pointer glow-accent btn-shine mt-2"
+          disabled={submitting || name.trim().length < 1 || email.trim().length < 5}
+          className={`bg-accent hover:bg-accent-light disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-sm py-4 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] cursor-pointer glow-accent btn-shine outline-none ${FOCUS_RING}`}
         >
-          {submitting ? "Analyzing..." : "Reveal My Archetype"}
+          {submitting ? "Analyzing…" : "Reveal My Archetype"}
         </button>
       </form>
-      <p className="text-text-muted/30 text-[10px] mt-6 text-center font-[family-name:var(--font-body)]">
-        We store this with your answers so you can return to your report.
-        Disposable / temporary inboxes are blocked.
+      <p className="text-text-muted text-[11px] mt-6 text-center font-[family-name:var(--font-body)] leading-relaxed">
+        Your name and email are stored with your answers so your report can be prepared. No marketing emails unless you tick the box.
+        By continuing you agree to our{" "}
+        <Link href="/terms" className="underline underline-offset-2 hover:text-text-primary">Terms</Link> and{" "}
+        <Link href="/privacy" className="underline underline-offset-2 hover:text-text-primary">Privacy Policy</Link>. You must be 16 or older.
       </p>
     </>
   );
@@ -539,48 +657,58 @@ function EmailStep({
 function FreeTextStep({
   question,
   disabled,
+  headingRef,
   onSubmit,
 }: {
   question: FreeTextQuestion;
   disabled: boolean;
+  headingRef: HeadingRef;
   onSubmit: (text: string | null) => void;
 }) {
   const [text, setText] = useState("");
-  const remaining = question.maxLength - text.length;
+  const max = Math.min(question.maxLength, FREE_TEXT_MAX);
+  // Count characters the way people do (one emoji = one), never half a pair.
+  const used = Array.from(text).length;
+  const remaining = max - used;
+  const fieldId = `pq-free-${question.id}`;
   return (
     <>
-      <p className="text-[10px] tracking-[0.3em] uppercase text-accent/60 text-center mb-4 font-[family-name:var(--font-body)]">
+      <p className="text-[10px] tracking-[0.3em] uppercase text-accent-light text-center mb-4 font-[family-name:var(--font-body)]">
         Optional — personalizes your report
       </p>
-      <h2 className="font-[family-name:var(--font-heading)] text-lg md:text-xl font-semibold text-text-primary text-center mb-6 leading-relaxed">
-        {question.prompt}
-      </h2>
+      <h1 ref={headingRef} tabIndex={-1} className={`${HEADING_CLASS} text-lg md:text-xl mb-6`}>
+        <label htmlFor={fieldId}>{question.prompt}</label>
+      </h1>
       <textarea
+        id={fieldId}
         value={text}
-        onChange={(e) => setText(e.target.value.slice(0, question.maxLength))}
+        onChange={(e) => setText(truncateCodePoints(e.target.value, max))}
         rows={4}
         placeholder="Type here, or skip."
-        className="w-full glass rounded-xl px-5 py-4 text-text-primary text-sm font-[family-name:var(--font-body)] placeholder:text-text-muted/30 focus:outline-none resize-none"
+        aria-describedby={`${fieldId}-count ${fieldId}-note`}
+        className={`${FIELD_CLASS} resize-none`}
         disabled={disabled}
       />
-      <p className="text-[10px] text-text-muted/30 mt-2 text-right font-[family-name:var(--font-body)]">
-        {remaining} characters
+      <p id={`${fieldId}-count`} className="text-[10px] text-text-muted mt-2 text-right font-[family-name:var(--font-body)]">
+        {remaining} characters left
       </p>
-      <p className="text-[11px] text-text-muted/40 mt-6 text-center font-[family-name:var(--font-body)] italic">
+      <p id={`${fieldId}-note`} className="text-[11px] text-text-muted mt-6 text-center font-[family-name:var(--font-body)] italic">
         {question.usageNote}
       </p>
       <div className="flex items-center justify-center gap-3 mt-6">
         <button
+          type="button"
           onClick={() => onSubmit(null)}
           disabled={disabled}
-          className="text-text-muted/50 text-sm px-5 py-3 rounded-xl transition-colors duration-300 font-[family-name:var(--font-body)] cursor-pointer hover:text-text-muted"
+          className={`text-text-muted text-sm px-5 py-3 rounded-xl transition-colors duration-300 font-[family-name:var(--font-body)] cursor-pointer hover:text-text-primary outline-none ${FOCUS_RING}`}
         >
           Skip
         </button>
         <button
+          type="button"
           onClick={() => onSubmit(text)}
           disabled={disabled || text.trim().length === 0}
-          className="bg-accent hover:bg-accent-light disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-sm px-8 py-3 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] cursor-pointer"
+          className={`bg-accent hover:bg-accent-light disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-sm px-8 py-3 rounded-xl transition-all duration-300 font-[family-name:var(--font-body)] cursor-pointer outline-none ${FOCUS_RING}`}
         >
           Continue
         </button>

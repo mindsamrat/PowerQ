@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getServerSupabase, isSupabaseConfigured } from "@/lib/supabase-server";
@@ -16,31 +16,39 @@ export const metadata: Metadata = {
  * ordinary 404 so the page's existence is never confirmed to outsiders.
  * Loads no personal data: only answers, scores, archetype and timestamps.
  */
+/** A token shorter than this is too easy to guess; the page stays disabled. */
+const MIN_TOKEN_LENGTH = 16;
+
 function tokenOk(given: string | undefined): boolean {
   const expected = process.env.ADMIN_TOKEN?.trim();
-  if (!expected || !given) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  if (!expected || expected.length < MIN_TOKEN_LENGTH || !given) return false;
+  // Hashing first makes the comparison constant-time regardless of length.
+  const a = createHash("sha256").update(given).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
 }
 
-async function fetchRows(): Promise<ResponseSample[]> {
+/** Hard ceiling so a runaway table cannot exhaust the function; the page says when it is hit. */
+const MAX_ROWS = 100_000;
+
+async function fetchRows(): Promise<{ rows: ResponseSample[]; truncated: boolean }> {
   const sb = getServerSupabase();
-  if (!sb) return [];
+  if (!sb) return { rows: [], truncated: false };
   const out: ResponseSample[] = [];
   const page = 1000;
-  for (let from = 0; from < 10000; from += page) {
+  // Newest first, so a capped read still describes the current population.
+  for (let from = 0; from < MAX_ROWS; from += page) {
     const { data, error } = await sb
       .from("responses")
       .select("id, archetype_id, pq_score, scores, answers, created_at")
-      .order("created_at", { ascending: true })
+      .order("created_at", { ascending: false })
       .range(from, from + page - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
     out.push(...(data as ResponseSample[]));
     if (data.length < page) break;
   }
-  return out;
+  return { rows: out.reverse(), truncated: out.length >= MAX_ROWS };
 }
 
 const AXES: AxisId[] = ["control", "visibility", "timeHorizon", "powerSource"];
@@ -55,11 +63,14 @@ export default async function PsychometricsPage({
 
   let report: PsychometricReport | null = null;
   let error: string | null = null;
+  let truncated = false;
   if (!isSupabaseConfigured()) {
     error = "Supabase is not configured in this environment, so there is nothing to analyse.";
   } else {
     try {
-      report = analysePsychometrics(await fetchRows());
+      const fetched = await fetchRows();
+      truncated = fetched.truncated;
+      report = analysePsychometrics(fetched.rows);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "unknown error";
       error = /fetch failed|ECONNREFUSED|ENOTFOUND|timeout/i.test(msg)
@@ -87,7 +98,8 @@ export default async function PsychometricsPage({
             <Box>
               <h2 style={h2}>Sample</h2>
               <p style={{ margin: 0, fontSize: 14 }}>
-                <b>{report.n}</b> responses{report.from ? ` · ${report.from.slice(0, 10)} → ${report.to?.slice(0, 10)}` : ""}
+                <b>{report.n}</b> responses analysed{report.from ? ` · ${report.from.slice(0, 10)} → ${report.to?.slice(0, 10)}` : ""}
+                {truncated ? ` · capped at the newest ${MAX_ROWS.toLocaleString()} rows` : " · every stored response"}
               </p>
             </Box>
 

@@ -11,39 +11,144 @@ import {
   getRarityRank,
   type AxisId,
 } from "@/data/archetypes";
-import { perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves, interactionReadings, evaluateContradictions } from "@/lib/result-analysis";
+import {
+  CONFIDENCE_HIGH_GAP, CONFIDENCE_HIGH_PQ, CONFIDENCE_MODERATE_GAP, CONFIDENCE_MODERATE_PQ,
+  dedupeAnswers, perAxisAttribution, deriveReadings, archetypeBlend, readConfidence, levelUpMoves, interactionReadings, evaluateContradictions,
+} from "@/lib/result-analysis";
+import { centredOptionVector } from "@/lib/archetype-insights";
 import { matchArchetype, pqBreakdown, type ScoredAnswer } from "@/lib/scoring";
 import { questions, choiceQuestions } from "@/data/questions";
+import { pluralName, sanitizeFreeText, stripLoneSurrogates, truncateCodePoints, FREE_TEXT_MAX } from "@/lib/sanitize";
+
+// ---------- Fonts ----------
+//
+// Every @fontsource file covers one script subset, so each subset is its own
+// family and user-supplied strings (name, email, free text) get a fallback
+// chain. react-pdf picks the first family in the chain that has the glyph.
+// The fixed copy is English and uses the plain Latin families. Keep the list
+// of files in sync with outputFileTracingIncludes in next.config.ts.
+
+const FONT_DIR = join(process.cwd(), "node_modules/@fontsource");
+const GARAMOND_SUBSETS = ["latin", "latin-ext", "cyrillic", "cyrillic-ext", "greek", "greek-ext", "vietnamese"] as const;
+const PLAYFAIR_SUBSETS = ["latin", "latin-ext", "cyrillic", "vietnamese"] as const;
+const DM_SANS_SUBSETS = ["latin", "latin-ext"] as const;
+
+const familyFor = (base: string, subset: string) => (subset === "latin" ? base : `${base} ${subset}`);
 
 let fontsRegistered = false;
 function registerFonts() {
   if (fontsRegistered) return;
-  const fontDir = join(process.cwd(), "node_modules/@fontsource");
-  Font.register({
-    family: "Playfair",
-    fonts: [
-      { src: join(fontDir, "playfair-display/files/playfair-display-latin-700-normal.woff"), fontWeight: 700 },
-      { src: join(fontDir, "playfair-display/files/playfair-display-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
-    ],
-  });
-  Font.register({
-    family: "Garamond",
-    fonts: [
-      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-400-normal.woff"), fontWeight: 400 },
-      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
-      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-600-normal.woff"), fontWeight: 600 },
-      { src: join(fontDir, "eb-garamond/files/eb-garamond-latin-700-normal.woff"), fontWeight: 700 },
-    ],
-  });
-  Font.register({
-    family: "DM Sans",
-    fonts: [
-      { src: join(fontDir, "dm-sans/files/dm-sans-latin-400-normal.woff"), fontWeight: 400 },
-      { src: join(fontDir, "dm-sans/files/dm-sans-latin-700-normal.woff"), fontWeight: 700 },
-      { src: join(fontDir, "dm-sans/files/dm-sans-latin-400-italic.woff"), fontWeight: 400, fontStyle: "italic" },
-    ],
-  });
+  for (const subset of GARAMOND_SUBSETS) {
+    const file = (w: number, style: "normal" | "italic") => join(FONT_DIR, `eb-garamond/files/eb-garamond-${subset}-${w}-${style}.woff`);
+    Font.register({
+      family: familyFor("Garamond", subset),
+      fonts: [
+        { src: file(400, "normal"), fontWeight: 400 },
+        { src: file(400, "italic"), fontWeight: 400, fontStyle: "italic" },
+        { src: file(600, "normal"), fontWeight: 600 },
+        { src: file(700, "normal"), fontWeight: 700 },
+      ],
+    });
+  }
+  for (const subset of PLAYFAIR_SUBSETS) {
+    const file = (w: number, style: "normal" | "italic") => join(FONT_DIR, `playfair-display/files/playfair-display-${subset}-${w}-${style}.woff`);
+    Font.register({
+      family: familyFor("Playfair", subset),
+      fonts: [
+        { src: file(700, "normal"), fontWeight: 700 },
+        { src: file(400, "italic"), fontWeight: 400, fontStyle: "italic" },
+      ],
+    });
+  }
+  for (const subset of DM_SANS_SUBSETS) {
+    const file = (w: number, style: "normal" | "italic") => join(FONT_DIR, `dm-sans/files/dm-sans-${subset}-${w}-${style}.woff`);
+    Font.register({
+      family: familyFor("DM Sans", subset),
+      fonts: [
+        { src: file(400, "normal"), fontWeight: 400 },
+        { src: file(700, "normal"), fontWeight: 700 },
+        { src: file(400, "italic"), fontWeight: 400, fontStyle: "italic" },
+      ],
+    });
+  }
+  // Devanagari (Hindi, Marathi, Nepali) has no serif in the set: Noto Sans
+  // steps in for those glyphs only. One upright weight; Devanagari has no italic.
+  // A fallback family must offer every style the chain is asked for, so the
+  // one upright file is registered for italic too.
+  const devanagari = join(FONT_DIR, "noto-sans-devanagari/files/noto-sans-devanagari-devanagari-400-normal.woff");
+  Font.register({ family: "Noto Devanagari", fonts: [{ src: devanagari, fontWeight: 400 }, { src: devanagari, fontWeight: 400, fontStyle: "italic" }] });
+  // Last resort so that a stray symbol never becomes a missing-glyph box.
+  const noto = join(FONT_DIR, "noto-sans/files/noto-sans-latin-400-normal.woff");
+  Font.register({ family: "Noto Sans", fonts: [{ src: noto, fontWeight: 400 }, { src: noto, fontWeight: 400, fontStyle: "italic" }] });
+  // No dictionary hyphenation, but an unbroken run (a long email, "xxxx…")
+  // is cut into pieces the line breaker may split, so it wraps instead of
+  // running off the page. react-pdf draws no hyphen at these breaks.
+  Font.registerHyphenationCallback((word) => (word.length <= LONGEST_UNBROKEN ? [word] : chunk(word, LONGEST_UNBROKEN)));
   fontsRegistered = true;
+}
+
+const LONGEST_UNBROKEN = 22;
+function chunk(word: string, size: number): string[] {
+  const chars = Array.from(word);
+  const parts: string[] = [];
+  for (let i = 0; i < chars.length; i += size) parts.push(chars.slice(i, i + size).join(""));
+  return parts;
+}
+
+/**
+ * Subset files of one typeface share a PostScript name, and pdfkit embeds
+ * fonts by that name — so a Cyrillic subset would be drawn with the Latin
+ * subset's glyphs. Every non-Latin subset is loaded up front and given a
+ * unique name before the first render.
+ */
+let fontsPatched: Promise<void> | null = null;
+function patchSubsetFontNames(): Promise<void> {
+  fontsPatched ??= (async () => {
+    const families = Font.getRegisteredFonts() as Record<string, { sources: { fontFamily: string; load: () => Promise<void>; data: { postscriptName?: string } | null }[] }>;
+    for (const [family, entry] of Object.entries(families)) {
+      if (!family.includes(" ") || family.startsWith("Noto")) continue;
+      for (const source of entry.sources) {
+        await source.load();
+        const data = source.data;
+        if (!data) continue;
+        const unique = `${data.postscriptName ?? "Font"}-${family.replace(/[^A-Za-z]/g, "")}`;
+        Object.defineProperty(data, "postscriptName", { value: unique, configurable: true });
+      }
+    }
+  })().catch((err) => {
+    fontsPatched = null;
+    throw err;
+  });
+  return fontsPatched;
+}
+
+/** Fallback chains, used everywhere: a respondent's name can land in any heading or paragraph. */
+const USER_SERIF = [...GARAMOND_SUBSETS.map((s) => familyFor("Garamond", s)), "Noto Devanagari", "Noto Sans"];
+const USER_DISPLAY = [...PLAYFAIR_SUBSETS.map((s) => familyFor("Playfair", s)), "Noto Devanagari", "Noto Sans"];
+const USER_SANS = [...DM_SANS_SUBSETS.map((s) => familyFor("DM Sans", s)), "Noto Devanagari", "Noto Sans"];
+
+/**
+ * Keep only characters some registered font can draw: Latin (incl. extended),
+ * Greek, Cyrillic, Devanagari, common punctuation and currency. Emoji, CJK,
+ * Arabic and the like are dropped rather than printed as boxes or overlaps.
+ */
+function pdfSafe(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return stripLoneSurrogates(raw)
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/[^\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{Script=Devanagari}\p{Script=Inherited} -~ -¿×÷‐-‧‰-‾₠-₿™]/gu, "")
+    .replace(/[​-‏⁠︀-️]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function safeDate(...candidates: (string | null | undefined)[]): string {
+  for (const c of candidates) {
+    if (!c) continue;
+    const d = new Date(c);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return new Date().toISOString().slice(0, 10);
 }
 
 const GOLD = "#8B7355";
@@ -65,47 +170,47 @@ const AXIS_COLOR: Record<AxisId, string> = {
 };
 
 const s = StyleSheet.create({
-  page: { paddingTop: 64, paddingBottom: 56, paddingHorizontal: 56, fontFamily: "Garamond", fontSize: 11, color: INK, backgroundColor: "#FFFFFF" },
+  page: { paddingTop: 64, paddingBottom: 56, paddingHorizontal: 56, fontFamily: USER_SERIF, fontSize: 11, color: INK, backgroundColor: "#FFFFFF" },
   // Crimson accent bar at the top of every page; logo + brand line
   pageHeaderBar: { position: "absolute", top: 0, left: 0, right: 0, height: 4, backgroundColor: CRIMSON },
   pageHeader: { position: "absolute", top: 18, left: 56, right: 56, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  pageHeaderBrand: { fontFamily: "Playfair", fontWeight: 700, fontSize: 9, letterSpacing: 4, color: CRIMSON, textTransform: "uppercase" },
-  pageHeaderMeta: { fontFamily: "DM Sans", fontSize: 8, letterSpacing: 1.5, color: FAINT, textTransform: "uppercase" },
+  pageHeaderBrand: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 9, letterSpacing: 4, color: CRIMSON, textTransform: "uppercase" },
+  pageHeaderMeta: { fontFamily: USER_SANS, fontSize: 8, letterSpacing: 1.5, color: FAINT, textTransform: "uppercase" },
   label: { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: GOLD, fontWeight: 700 },
-  pageTitle: { fontFamily: "Playfair", fontWeight: 700, fontSize: 26, marginTop: 6, marginBottom: 14, color: INK, lineHeight: 1.1 },
-  sectionHeading: { fontFamily: "Playfair", fontWeight: 700, fontSize: 14, marginTop: 14, marginBottom: 6, color: INK },
+  pageTitle: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 26, marginTop: 6, marginBottom: 14, color: INK, lineHeight: 1.1 },
+  sectionHeading: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 14, marginTop: 14, marginBottom: 6, color: INK },
   body: { fontSize: 11, lineHeight: 1.65, color: SUB, marginBottom: 8 },
   bodyEmphasis: { fontSize: 12, lineHeight: 1.65, color: INK, marginBottom: 10, fontStyle: "italic" },
   caption: { fontSize: 10, lineHeight: 1.5, color: SUB, fontStyle: "italic" },
   divider: { height: 1, backgroundColor: "#E0D9C8", marginVertical: 12 },
-  watermark: { position: "absolute", bottom: 22, left: 56, right: 120, fontSize: 7, letterSpacing: 1.5, textTransform: "uppercase", color: FAINT },
-  pageNum: { position: "absolute", bottom: 22, right: 56, fontSize: 8, color: FAINT, fontFamily: "DM Sans" },
+  watermark: { position: "absolute", bottom: 22, left: 56, right: 120, fontSize: 7, letterSpacing: 1.5, textTransform: "uppercase", color: FAINT, fontFamily: USER_SERIF, maxLines: 1, textOverflow: "ellipsis" },
+  pageNum: { position: "absolute", bottom: 22, right: 56, fontSize: 8, color: FAINT, fontFamily: USER_SANS },
 
   // Cover
   coverFrame: { flex: 1, justifyContent: "center", alignItems: "center", padding: 36 },
   coverLabel: { fontSize: 10, letterSpacing: 6, textTransform: "uppercase", color: GOLD, marginBottom: 22 },
-  coverGreeting: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 18, color: SUB, marginBottom: 20, textAlign: "center" },
-  coverArchetype: { fontFamily: "Playfair", fontWeight: 700, fontSize: 56, color: INK, textAlign: "center", letterSpacing: 1 },
-  coverTagline: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 16, color: SUB, marginTop: 12, textAlign: "center" },
+  coverGreeting: { fontFamily: USER_DISPLAY, fontStyle: "italic", fontSize: 18, color: SUB, marginBottom: 20, textAlign: "center" },
+  coverArchetype: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 56, color: INK, textAlign: "center", letterSpacing: 1 },
+  coverTagline: { fontFamily: USER_DISPLAY, fontStyle: "italic", fontSize: 16, color: SUB, marginTop: 12, textAlign: "center" },
   coverDivider: { width: 50, height: 1, backgroundColor: GOLD, marginVertical: 22 },
   coverMeta: { fontSize: 9, color: SUB, lineHeight: 1.7, textAlign: "center" },
   totemBlock: { marginTop: 18, alignItems: "center" },
   totemLabel: { fontSize: 8.5, letterSpacing: 3, textTransform: "uppercase", color: GOLD, marginBottom: 4 },
-  totemAnimal: { fontFamily: "Playfair", fontWeight: 700, fontSize: 22, color: INK },
-  totemMeaning: { fontFamily: "Playfair", fontStyle: "italic", fontSize: 11, color: SUB, marginTop: 4, textAlign: "center", maxWidth: 360, lineHeight: 1.4 },
+  totemAnimal: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 22, color: INK },
+  totemMeaning: { fontFamily: USER_DISPLAY, fontStyle: "italic", fontSize: 11, color: SUB, marginTop: 4, textAlign: "center", maxWidth: 360, lineHeight: 1.4 },
 
   // Axis chart
   axisRow: { marginBottom: 8 },
   axisHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 4 },
   axisName: { fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: SUB, fontWeight: 700 },
-  axisValue: { fontFamily: "Playfair", fontWeight: 700, fontSize: 14, color: INK },
+  axisValue: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 14, color: INK },
   bar: { height: 2, backgroundColor: "#E0D9C8", marginBottom: 4 },
 
   // Cards
   card: { backgroundColor: PAPER, padding: 12, marginVertical: 6, borderLeft: `2px solid ${GOLD}` },
   cardLabel: { fontSize: 8, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, marginBottom: 4 },
   cardPrompt: { fontSize: 9.5, fontStyle: "italic", color: SUB, marginBottom: 4 },
-  cardQuote: { fontSize: 11, color: INK, lineHeight: 1.5 },
+  cardQuote: { fontSize: 11, color: INK, lineHeight: 1.5, fontFamily: USER_SERIF },
   cardImpact: { fontSize: 8.5, color: SUB, marginTop: 4 },
 
   // Bullets
@@ -115,7 +220,7 @@ const s = StyleSheet.create({
 
   // Laws
   lawRow: { flexDirection: "row", marginBottom: 9, paddingBottom: 9, borderBottom: "1px solid #EEE" },
-  lawNum: { fontFamily: "Playfair", fontWeight: 700, fontSize: 16, color: GOLD, width: 28 },
+  lawNum: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 16, color: GOLD, width: 28 },
   lawText: { flex: 1, fontSize: 11, lineHeight: 1.5, color: INK, paddingTop: 1 },
 
   // Blend
@@ -128,7 +233,7 @@ const s = StyleSheet.create({
   compTrack: { flex: 1, height: 14, backgroundColor: PAPER, position: "relative" },
   compYourBar: { position: "absolute", top: 0, left: 0, height: 14, backgroundColor: GOLD },
   compAvgMark: { position: "absolute", top: -2, width: 1.5, height: 18, backgroundColor: CRIMSON },
-  compValue: { width: 36, textAlign: "right", fontSize: 10, color: INK, fontFamily: "Playfair", fontWeight: 700 },
+  compValue: { width: 36, textAlign: "right", fontSize: 10, color: INK, fontFamily: USER_DISPLAY, fontWeight: 700 },
 
   // Roadmap
   roadmapRow: { marginBottom: 12 },
@@ -139,7 +244,7 @@ const s = StyleSheet.create({
   // Pairings
   pairCard: { backgroundColor: PAPER, padding: 14, marginVertical: 8 },
   pairTitle: { fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 },
-  pairArchetype: { fontFamily: "Playfair", fontWeight: 700, fontSize: 18, color: INK, marginBottom: 6 },
+  pairArchetype: { fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 18, color: INK, marginBottom: 6 },
   pairReason: { fontSize: 10.5, color: SUB, lineHeight: 1.6 },
 
   // Reading rows (strength / warning / practice)
@@ -233,10 +338,10 @@ function RadarChart({ scores, size = 220 }: { scores: Record<AxisId, number>; si
       })}
       {/* Axis labels */}
       <G>
-        <Text x={center} y={center - maxR - 10} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "middle" }}>CONTROL</Text>
-        <Text x={center + maxR + 14} y={center + 3} style={{ fontSize: 8, fontFamily: "DM Sans" }}>VISIBILITY</Text>
-        <Text x={center} y={center + maxR + 14} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "middle" }}>TIME-HORIZON</Text>
-        <Text x={center - maxR - 14} y={center + 3} style={{ fontSize: 8, fontFamily: "DM Sans", textAnchor: "end" }}>POWER-SOURCE</Text>
+        <Text x={center} y={center - maxR - 10} style={{ fontSize: 8, fontFamily: USER_SANS, textAnchor: "middle" }}>CONTROL</Text>
+        <Text x={center + maxR + 14} y={center + 3} style={{ fontSize: 8, fontFamily: USER_SANS }}>VISIBILITY</Text>
+        <Text x={center} y={center + maxR + 14} style={{ fontSize: 8, fontFamily: USER_SANS, textAnchor: "middle" }}>TIME-HORIZON</Text>
+        <Text x={center - maxR - 14} y={center + 3} style={{ fontSize: 8, fontFamily: USER_SANS, textAnchor: "end" }}>POWER-SOURCE</Text>
       </G>
     </Svg>
   );
@@ -259,11 +364,53 @@ function ordinal(n: number): string {
   }
 }
 
+/** First word of the name, in printable characters, short enough for a cover line. */
 function firstName(name: string | null | undefined): string {
-  if (!name) return "Reader";
-  const trimmed = name.trim();
-  if (!trimmed) return "Reader";
-  return trimmed.split(/\s+/)[0];
+  const clean = pdfSafe(name);
+  const first = clean.split(" ")[0] ?? "";
+  if (!first) return "Reader";
+  return truncateCodePoints(first, 24);
+}
+
+type StoredAnswer = DbResponse["answers"][number];
+
+/** Legacy or hand-edited rows: keep only answers the question bank recognises, one per question. */
+function normaliseAnswers(raw: unknown): StoredAnswer[] {
+  if (!Array.isArray(raw)) return [];
+  const out: StoredAnswer[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const { q, o } = entry as { q?: unknown; o?: unknown };
+    if (typeof q !== "string" || typeof o !== "string") continue;
+    const question = questions.find((qq) => qq.id === q);
+    if (!question || question.kind === "free-text" || question.kind === "email") continue;
+    const option = question.options.find((opt) => opt.id === o);
+    if (!option) continue;
+    // Deltas always come from the bank, never from the stored row.
+    out.push({
+      q, o,
+      d: {
+        control: option.scores.control ?? 0,
+        visibility: option.scores.visibility ?? 0,
+        timeHorizon: option.scores.timeHorizon ?? 0,
+        powerSource: option.scores.powerSource ?? 0,
+      },
+    });
+  }
+  return dedupeAnswers(out);
+}
+
+function normaliseFreeText(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!Array.isArray(raw)) return out;
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const { questionId, text } = entry as { questionId?: unknown; text?: unknown };
+    if (typeof questionId !== "string" || out[questionId] !== undefined) continue;
+    const clean = truncateCodePoints(pdfSafe(sanitizeFreeText(text)), FREE_TEXT_MAX);
+    if (clean) out[questionId] = clean;
+  }
+  return out;
 }
 
 export interface DbResponse {
@@ -286,6 +433,7 @@ export interface DbResponse {
  */
 export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; filename: string }> {
   registerFonts();
+  await patchSubsetFontNames();
   const archetype = getArchetypeById(row.archetype_id) ?? archetypes[0];
   const enemy = getEnemy(archetype);
   const rank = getRarityRank(archetype);
@@ -296,11 +444,9 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
     powerSource: clampScore(row.scores?.powerSource),
   };
   const pq = clampScore(row.pq_score);
-  const answers = Array.isArray(row.answers) ? row.answers : [];
-  const freeTextById: Record<string, string> = Object.fromEntries(
-    (Array.isArray(row.free_text) ? row.free_text : []).map((f) => [f.questionId, f.text])
-  );
-  const attribution = perAxisAttribution(answers);
+  const answers = normaliseAnswers(row.answers);
+  const freeTextById = normaliseFreeText(row.free_text);
+  const attribution = perAxisAttribution(answers, scores);
   const readings = deriveReadings(scores);
   const blend = archetypeBlend(scores).slice(0, 4);
   const match = matchArchetype(scores);
@@ -313,10 +459,13 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
   const ampArch = getArchetypeById(archetype.pairings.amplifies.id);
   const drainArch = getArchetypeById(archetype.pairings.drains.id);
   const levelUp = levelUpMoves(scores);
-  const docId = row.id.slice(0, 8).toUpperCase();
-  const dateStr = new Date(row.paid_at ?? row.created_at).toISOString().slice(0, 10);
-  const watermark = `${row.email} · ${docId} · ${dateStr}`;
+  const docId = String(row.id ?? "").slice(0, 8).toUpperCase() || "PQ";
+  const dateStr = safeDate(row.paid_at, row.created_at);
+  const watermark = `${truncateCodePoints(pdfSafe(row.email), 40) || "licensed copy"} · ${docId} · ${dateStr}`;
   const personalName = firstName(row.name);
+  const bareName = archetype.name.replace(/^The /, "");
+  const plural = pluralName(archetype.name).replace(/^the /, "");
+  const answered = breakdown.answered;
 
   const axesOrdered: AxisId[] = ["control", "visibility", "timeHorizon", "powerSource"];
 
@@ -334,7 +483,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
           <Text style={s.coverTagline}>{archetype.tagline}</Text>
           <View style={s.coverDivider} />
           <Text style={s.coverMeta}>
-            PQ {pq} of 100 · Fit {match.fit}% · {archetype.rarity}% rarity · {ordinal(rank)} rarest of 8 archetypes{"\n"}
+            PQ {pq} of 100 · Fit {match.fit}% · Est. rarity {archetype.rarity}% · {ordinal(rank)} rarest of 8 archetypes{"\n"}
             Confidence: {confidence.label} · Document {docId} · {dateStr}
           </Text>
           <View style={s.totemBlock}>
@@ -361,7 +510,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             { k: "Runner-up", v: match.runnerUp.name, note: "Second-best direction match" },
             { k: "Runner-up fit", v: `${match.runnerUpFit} / 100` },
             { k: "Gap", v: `${match.gap} pts`, note: "Fit minus runner-up fit" },
-            { k: "Confidence", v: confidence.label, note: "Strong ≥14 pts & PQ ≥48 · Clear ≥7 pts & PQ ≥40 · else Borderline" },
+            { k: "Confidence", v: confidence.label, note: `Strong: gap ${CONFIDENCE_HIGH_GAP}+ and PQ ${CONFIDENCE_HIGH_PQ}+ · Clear: gap ${CONFIDENCE_MODERATE_GAP}+ and PQ ${CONFIDENCE_MODERATE_PQ}+ · else Borderline` },
             { k: "PQ (Signature Definition)", v: `${pq} / 100`, note: "0.5 × Extremity + 0.5 × Consistency" },
             { k: "Extremity", v: `${breakdown.extremity} / 100`, note: "Mean distance of the four axes from neutral" },
             { k: "Consistency", v: `${breakdown.consistency} / 100`, note: "% of answers pointing toward your archetype" },
@@ -377,8 +526,8 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             { k: "Natural enemy", v: enemy.name },
             { k: "Amplified by", v: ampArch?.name ?? archetype.pairings.amplifies.id },
             { k: "Drained by", v: drainArch?.name ?? archetype.pairings.drains.id },
-            { k: "Rarity (seeded)", v: `${archetype.rarity}% · ${ordinal(rank)} rarest of 8` },
-            { k: "Questions scored", v: `${breakdown.answered} of ${choiceQuestions.length}`, note: breakdown.answered < choiceQuestions.length ? "Tiebreakers skipped: match was already clear" : "Full bank, including tiebreakers" },
+            { k: "Rarity (estimate)", v: `${archetype.rarity}% · ${ordinal(rank)} rarest of 8`, note: "Framework estimate, not a measured share of respondents" },
+            { k: "Questions scored", v: `${answered} of ${choiceQuestions.length}`, note: answered < choiceQuestions.length ? "Tiebreakers skipped: match was already clear" : "Full bank, including tiebreakers" },
             { k: "Free-text prompts answered", v: `${["q24", "q25"].filter((id) => !!freeTextById[id]).length} of 2` },
             { k: "Document", v: `${docId} · ${dateStr}` },
           ];
@@ -392,7 +541,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
               {rows.map((r, i) => (
                 <View key={r.k} style={{ flexDirection: "row", paddingVertical: 3.5, paddingHorizontal: 4, backgroundColor: i % 2 === 0 ? PAPER : "#FFFFFF" }}>
                   <Text style={{ width: "34%", fontSize: 9, color: INK, fontWeight: 700 }}>{r.k}</Text>
-                  <Text style={{ width: "30%", fontSize: 9, color: CRIMSON_DEEP, fontFamily: "DM Sans", fontWeight: 700 }}>{r.v}</Text>
+                  <Text style={{ width: "30%", fontSize: 9, color: CRIMSON_DEEP, fontFamily: USER_SANS, fontWeight: 700 }}>{r.v}</Text>
                   <Text style={{ width: "36%", fontSize: 7.5, color: SUB, fontStyle: "italic", lineHeight: 1.3 }}>{r.note ?? ""}</Text>
                 </View>
               ))}
@@ -411,18 +560,18 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <View style={{ flexDirection: "row", marginVertical: 10 }}>
           <View style={{ flex: 1, paddingRight: 10 }}>
             <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Archetype</Text>
-            <Text style={{ fontFamily: "Playfair", fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.name.replace(/^The /, "")}</Text>
+            <Text style={{ fontFamily: USER_DISPLAY, fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.name.replace(/^The /, "")}</Text>
             <Text style={{ fontSize: 9, color: SUB, marginTop: 4, fontStyle: "italic" }}>{archetype.tagline}</Text>
           </View>
           <View style={{ width: 100, alignItems: "center", borderLeft: `1px solid ${PAPER_DARK}`, paddingLeft: 14 }}>
             <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>PQ</Text>
-            <Text style={{ fontFamily: "Playfair", fontSize: 36, fontWeight: 700, color: CRIMSON, lineHeight: 1 }}>{pq}</Text>
+            <Text style={{ fontFamily: USER_DISPLAY, fontSize: 36, fontWeight: 700, color: CRIMSON, lineHeight: 1 }}>{pq}</Text>
             <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>/ 100</Text>
           </View>
           <View style={{ width: 100, alignItems: "center", borderLeft: `1px solid ${PAPER_DARK}`, paddingLeft: 14 }}>
-            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Rarity</Text>
-            <Text style={{ fontFamily: "Playfair", fontSize: 36, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.rarity}%</Text>
-            <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>{ordinal(rank)} rarest</Text>
+            <Text style={{ fontSize: 8.5, letterSpacing: 2, textTransform: "uppercase", color: GOLD, marginBottom: 4 }}>Est. rarity</Text>
+            <Text style={{ fontFamily: USER_DISPLAY, fontSize: 36, fontWeight: 700, color: INK, lineHeight: 1 }}>{archetype.rarity}%</Text>
+            <Text style={{ fontSize: 8, color: SUB, marginTop: 2 }}>{ordinal(rank)} rarest (est.)</Text>
           </View>
         </View>
 
@@ -442,7 +591,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             return (
               <View key={axis} style={{ flexDirection: "row", paddingVertical: 5, backgroundColor: i % 2 === 0 ? PAPER : "#FFFFFF", paddingHorizontal: 4, borderLeft: `2px solid ${AXIS_COLOR[axis]}` }}>
                 <Text style={{ width: "32%", fontSize: 10.5, color: INK, fontWeight: 700, paddingTop: 2 }}>{axisLabels[axis]}</Text>
-                <Text style={{ width: "16%", fontFamily: "Playfair", fontSize: 14, fontWeight: 700, color: AXIS_COLOR[axis], textAlign: "right", paddingTop: 1 }}>{value}</Text>
+                <Text style={{ width: "16%", fontFamily: USER_DISPLAY, fontSize: 14, fontWeight: 700, color: AXIS_COLOR[axis], textAlign: "right", paddingTop: 1 }}>{value}</Text>
                 <Text style={{ width: "18%", fontSize: 9.5, color: SUB, textAlign: "center", textTransform: "uppercase", letterSpacing: 1, paddingTop: 3 }}>{band}</Text>
                 <Text style={{ width: "34%", fontSize: 9.5, color: SUB, paddingTop: 3, lineHeight: 1.3 }}>
                   {value >= 67 ? "Pronounced" : value <= 33 ? "Inverted" : "Balanced"}
@@ -488,8 +637,8 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
       {/* 1b. TABLE OF CONTENTS */}
       <Page size="LETTER" style={s.page}>
         <Text style={s.label}>Contents</Text>
-        <Text style={s.pageTitle}>What is in this report.</Text>
-        <View style={{ marginTop: 6 }}>
+        <Text style={[s.pageTitle, { marginBottom: 6 }]}>What is in this report.</Text>
+        <View style={{ marginTop: 2 }}>
           {[
             { n: "—", title: "Standard Profile Sheet", sub: "25 fixed variables, identical layout in every report, for side-by-side comparison" },
             { n: "—", title: "Executive Summary", sub: "The one-page version: scorecard, top edge, top risk, one move" },
@@ -509,11 +658,11 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             { n: "XIV", title: "Hidden Edge & Closing", sub: "Your free-text in our analysis, plus a personal close" },
             { n: "XV", title: "Appendix", sub: "Glossary, frameworks, methodology footnotes" },
           ].map((row, i) => (
-            <View key={i} style={{ flexDirection: "row", marginBottom: 9, paddingBottom: 9, borderBottom: "0.5px solid #EEE" }}>
-              <Text style={{ fontFamily: "Playfair", fontWeight: 700, fontSize: 13, color: CRIMSON, width: 32 }}>{row.n}</Text>
+            <View key={i} style={{ flexDirection: "row", marginBottom: 3, paddingBottom: 3, borderBottom: "0.5px solid #EEE" }}>
+              <Text style={{ fontFamily: USER_DISPLAY, fontWeight: 700, fontSize: 12, color: CRIMSON, width: 32 }}>{row.n}</Text>
               <View style={{ flex: 1 }}>
-                <Text style={{ fontFamily: "Playfair", fontSize: 13, color: INK, fontWeight: 700 }}>{row.title}</Text>
-                <Text style={{ fontSize: 10, color: SUB, fontStyle: "italic", marginTop: 1 }}>{row.sub}</Text>
+                <Text style={{ fontFamily: USER_DISPLAY, fontSize: 12, color: INK, fontWeight: 700 }}>{row.title}</Text>
+                <Text style={{ fontSize: 9, color: SUB, fontStyle: "italic", marginTop: 1 }}>{row.sub}</Text>
               </View>
             </View>
           ))}
@@ -535,7 +684,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             <View key={axis} style={{ width: "50%", paddingRight: 8, marginBottom: 10 }}>
               <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 3 }}>
                 <View style={{ width: 4, height: 12, backgroundColor: AXIS_COLOR[axis], marginRight: 6 }} />
-                <Text style={{ fontFamily: "Playfair", fontSize: 12, fontWeight: 700, color: INK }}>{axisLabels[axis]}</Text>
+                <Text style={{ fontFamily: USER_DISPLAY, fontSize: 12, fontWeight: 700, color: INK }}>{axisLabels[axis]}</Text>
               </View>
               <Text style={{ fontSize: 9.5, color: SUB, lineHeight: 1.5 }}>
                 {axis === "control" && "Direct command vs sideways influence. Probes how willing you are to issue explicit orders versus shape outcomes through structure or charm."}
@@ -569,11 +718,16 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <Text style={s.label}>The Verdict</Text>
         <Text style={s.pageTitle}>{personalName}, here is what your answers actually said.</Text>
         <Text style={s.bodyEmphasis}>
-          You scored {pq} on the Power Quotient. That places you in {archetype.name} territory with {confidence.label.toLowerCase()} confidence —
-          {confidence.gap >= 18 ? " the next-closest archetype isn't close." : ` with a measurable lean toward ${match.runnerUp.name}.`} Only {archetype.rarity}% of respondents read this way.
+          You scored {pq} on the Power Quotient. That places you in {archetype.name} territory as a {confidence.label.toLowerCase()}
+          {confidence.level === "high"
+            ? " — the next-closest archetype isn't close."
+            : confidence.level === "moderate"
+              ? ` — with a measurable lean toward ${match.runnerUp.name}.`
+              : ` — ${match.runnerUp.name} is close behind, so read both.`}
+          {" "}By our framework&apos;s estimate, about {archetype.rarity}% of people read this way.
         </Text>
         <Text style={s.body}>
-          {personalName}, this is not a horoscope. It is a 27-question diagnostic processed against four research-grounded axes (Snyder&apos;s self-monitoring, McClelland&apos;s power motive, Strathman&apos;s consideration of future consequences, Higgins&apos; regulatory focus) and matched against eight archetype centroids in 4-dimensional space. Your scores are the literal sum of your choice deltas. Every line in this report cites the exact answer that produced it.
+          {personalName}, this is not a horoscope. It is a {answered}-question diagnostic processed against four research-grounded axes (Snyder&apos;s self-monitoring, McClelland&apos;s power motive, Strathman&apos;s consideration of future consequences, Higgins&apos; regulatory focus) and matched against eight archetype centroids in 4-dimensional space. Each choice you made is weighed against the three options you passed over on the same question, and those weights add up to your four scores. Every line in this report cites the exact answer that produced it.
         </Text>
         <Text style={s.sectionHeading}>What the engine saw in you</Text>
         <Text style={s.body}>
@@ -594,8 +748,8 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         </View>
         <Text style={s.body}>
           {freeTextById.q24
-            ? `That moment is the report in miniature. Every ${archetype.name} has a story like this — the move that worked because it broke the pattern others were following.`
-            : `Skipping this prompt is itself a data point: ${archetype.name}s who withhold the story tend to be the ones who have one. The analysis that follows relies on your 27 scored choices alone.`}
+            ? `That moment is the report in miniature. Every ${bareName} has a story like this — the move that worked because it broke the pattern others were following.`
+            : `Skipping this prompt is itself a data point: ${plural} who withhold the story tend to be the ones who have one. The analysis that follows relies on your ${answered} scored choices alone.`}
         </Text>
         <PageChrome docId={docId} watermark={watermark} />
       </Page>
@@ -603,7 +757,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
       {/* 3. POWER SIGNATURE */}
       <Page size="LETTER" style={s.page}>
         <Text style={s.label}>Your Power Signature</Text>
-        <Text style={s.pageTitle}>Four axes. One pattern. {personalName}.</Text>
+        <Text style={s.pageTitle}>Four axes. One pattern.</Text>
 
         <View style={{ alignItems: "center", marginVertical: 4 }}>
           <RadarChart scores={scores} size={200} />
@@ -660,8 +814,8 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             <View style={{ flexDirection: "row", alignItems: "flex-end", marginBottom: 8 }}>
               <View style={{ width: 6, height: 38, backgroundColor: AXIS_COLOR[axis], marginRight: 10 }} />
               <View>
-                <Text style={{ fontFamily: "Playfair", fontSize: 32, fontWeight: 700, lineHeight: 1, color: AXIS_COLOR[axis] }}>{value}</Text>
-                <Text style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, marginTop: 2 }}>{band} band · {axisLabels[axis]}</Text>
+                <Text style={{ fontFamily: USER_DISPLAY, fontSize: 32, fontWeight: 700, lineHeight: 1.15, color: AXIS_COLOR[axis] }}>{value}</Text>
+                <Text style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: SUB, marginTop: 4 }}>{band} band · {axisLabels[axis]}</Text>
               </View>
             </View>
             <Text style={s.bodyEmphasis}>{narrative}</Text>
@@ -720,7 +874,6 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
             </View>
 
             <PageChrome docId={docId} watermark={watermark} />
-            <Text style={s.pageNum}>{String(4 + idx).padStart(2, "0")}</Text>
           </Page>
         );
       })}
@@ -787,7 +940,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
       {/* 10. HOW YOU WIN */}
       <Page size="LETTER" style={s.page}>
         <Text style={s.label}>How You Win</Text>
-        <Text style={s.pageTitle}>The three contexts {archetype.name}s dominate.</Text>
+        <Text style={s.pageTitle}>The three contexts {plural} dominate.</Text>
         <Text style={s.body}>
           These are not generic strengths. They are the specific contexts where your archetype&apos;s wiring becomes a structural edge.
         </Text>
@@ -864,7 +1017,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <Text style={s.label}>Real Life Patterns</Text>
         <Text style={s.pageTitle}>{personalName}, the parts that should feel familiar.</Text>
         <Text style={s.body}>
-          {archetype.name}s tend to share specific patterns across work, relationships, and decision-making. Read these slowly. The point isn&apos;t flattery — it&apos;s recognition. If three of these read as accurate, the diagnosis is doing its job.
+          {pluralName(archetype.name).replace(/^the /, "The ")} tend to share specific patterns across work, relationships, and decision-making. Read these slowly. The point isn&apos;t flattery — it&apos;s recognition. If three of these read as accurate, the diagnosis is doing its job.
         </Text>
         {archetype.lifePatterns.map((p, i) => (
           <View key={i} wrap={false} style={{ marginBottom: 14, padding: 12, backgroundColor: PAPER, borderLeft: `2px solid ${CRIMSON}` }}>
@@ -891,7 +1044,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
           <View key={entry.axis} wrap={false} style={{ marginBottom: 12 }}>
             <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
               <View style={{ width: 4, height: 14, backgroundColor: AXIS_COLOR[entry.axis], marginRight: 6 }} />
-              <Text style={{ fontFamily: "Playfair", fontSize: 13, fontWeight: 700, color: INK }}>{entry.label}</Text>
+              <Text style={{ fontFamily: USER_DISPLAY, fontSize: 13, fontWeight: 700, color: INK }}>{entry.label}</Text>
               <Text style={{ fontSize: 9.5, color: SUB, marginLeft: 8, fontStyle: "italic" }}>· {entry.band} band, {entry.score}/100</Text>
             </View>
             <View style={{ paddingLeft: 10 }}>
@@ -923,7 +1076,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         {interactions.map((it, i) => (
           <View key={it.id} wrap={false} style={{ marginBottom: 8, padding: 9, backgroundColor: PAPER, borderLeft: `2px solid ${it.axes ? AXIS_COLOR[it.axes[0]] : GOLD}` }}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 1 }}>
-              <Text style={{ fontFamily: "Playfair", fontSize: 12.5, fontWeight: 700, color: INK }}>{i + 1}. {it.label}</Text>
+              <Text style={{ fontFamily: USER_DISPLAY, fontSize: 12.5, fontWeight: 700, color: INK }}>{i + 1}. {it.label}</Text>
               <Text style={{ fontSize: 7.5, letterSpacing: 1, textTransform: "uppercase", color: SUB }}>
                 {it.axes ? `${axisLabels[it.axes[0]]} × ${axisLabels[it.axes[1]]} · ${it.strength}/100` : "Whole profile"}
               </Text>
@@ -983,7 +1136,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         <Text style={s.label}>XIII · Per-Question Analysis</Text>
         <Text style={s.pageTitle}>Every choice. What it probed. Where it pulled.</Text>
         <Text style={s.body}>
-          Below is the full audit trail of your scored answers. Each row names the research tradition the question maps to and the net axis impact of your choice. This is the data the engine ran your archetype on.
+          Below is the full audit trail of your scored answers. Each row names the research tradition the question maps to and the net pull of your choice, measured the way the engine measures it: against the other three options on the same question. This is the data your archetype was computed from.
         </Text>
 
         {/* Table header */}
@@ -996,11 +1149,12 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         {choiceQuestions.map((q, idx) => {
           const a = answeredById.get(q.id);
           const opt = a ? q.options.find((o) => o.id === a.o) : undefined;
-          const d = a?.d ?? { control: 0, visibility: 0, timeHorizon: 0, powerSource: 0 };
-          const totalDelta = (d.control ?? 0) + (d.visibility ?? 0) + (d.timeHorizon ?? 0) + (d.powerSource ?? 0);
-          const dominantAxis = (Object.keys(d) as AxisId[]).reduce((best, ax) =>
-            Math.abs(d[ax] ?? 0) > Math.abs(d[best] ?? 0) ? ax : best,
-            "control" as AxisId
+          // Centred within the question, exactly as the scorer counts it.
+          const centred = a ? centredOptionVector(q, a.o) ?? [0, 0, 0, 0] : [0, 0, 0, 0];
+          const totalDelta = Math.round(centred.reduce((sum, v) => sum + v, 0));
+          const dominantAxis = axesOrdered.reduce((best, ax, i) =>
+            Math.abs(centred[i]) > Math.abs(centred[axesOrdered.indexOf(best)]) ? ax : best,
+            axesOrdered[0]
           );
           return (
             <View
@@ -1037,7 +1191,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
               <Text style={{
                 width: "16%",
                 fontSize: 9,
-                fontFamily: "DM Sans",
+                fontFamily: USER_SANS,
                 fontWeight: 700,
                 textAlign: "right",
                 color: !a ? FAINT : totalDelta > 0 ? CRIMSON_DEEP : totalDelta < 0 ? "#3F5F7E" : SUB,
@@ -1050,7 +1204,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         })}
 
         <Text style={[s.caption, { marginTop: 10 }]}>
-          Net shift is the sum of the four axis deltas for the option you chose (positive = toward command, exposure, patience and force; negative = toward autonomy, discretion, speed and magnetism). The colour stripe shows the axis the choice moved most. Every report lists all {choiceQuestions.length} questions in the same order; rows marked “not served” were skipped by the adaptive engine.
+          Net shift adds up how far your choice sat from the middle of its four options on each axis (positive = toward command, exposure, patience and force; negative = toward autonomy, discretion, speed and magnetism). The colour stripe shows the axis the choice moved most. Every report lists all {choiceQuestions.length} questions in the same order; rows marked “not served” were skipped by the adaptive engine.
         </Text>
         <PageChrome docId={docId} watermark={watermark} />
       </Page>
@@ -1065,7 +1219,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
           <View key={axis} style={{ marginBottom: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 2 }}>
               <View style={{ width: 4, height: 12, backgroundColor: AXIS_COLOR[axis], marginRight: 6 }} />
-              <Text style={{ fontFamily: "Playfair", fontSize: 12, fontWeight: 700 }}>{axisLabels[axis]}</Text>
+              <Text style={{ fontFamily: USER_DISPLAY, fontSize: 12, fontWeight: 700 }}>{axisLabels[axis]}</Text>
             </View>
             <Text style={{ fontSize: 10, color: SUB, lineHeight: 1.5 }}>
               <Text style={{ fontStyle: "italic" }}>Low (0–33):</Text> {axisNarratives[axis].low}
@@ -1088,7 +1242,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
 
         <Text style={s.sectionHeading}>Limits of this assessment</Text>
         <Text style={s.body}>
-          Self-report assessments suffer from social desirability bias and impression management. The PQ mitigates this by offering four options per question that are each attractive to a different archetype, but no scale eliminates the effect. Treat this report as a hypothesis to test against your own behaviour, not a verdict. Rarity percentages are framework estimates, not sample-derived; they will be recomputed once the live distribution exceeds 5,000 completions.
+          Self-report assessments suffer from social desirability bias and impression management. The PQ mitigates this by offering four options per question that are each attractive to a different archetype, but no scale eliminates the effect. Treat this report as a hypothesis to test against your own behaviour, not a verdict. Rarity percentages are framework estimates, not measured shares of respondents; they are revisited as real responses accumulate.
         </Text>
 
         <PageChrome docId={docId} watermark={watermark} />
@@ -1108,8 +1262,8 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
         </View>
         <Text style={s.body}>
           {freeTextById.q25
-            ? `This is the lever most ${archetype.name}s never name. Holding back what you held back here is not weakness — it is leverage you have not yet decided to spend. The first time you say it in a room where it would cost you something, you change. Until then, this is the unused tool in the box.`
-            : `You skipped the descriptive question, but the pattern is still readable: every ${archetype.name} carries one quality that becomes their decisive edge when they stop hiding it. Pin one relationship this year where you let yours show.`}
+            ? `This is the lever most ${plural} never name. Holding back what you held back here is not weakness — it is leverage you have not yet decided to spend. The first time you say it in a room where it would cost you something, you change. Until then, this is the unused tool in the box.`
+            : `You skipped the descriptive question, but the pattern is still readable: every ${bareName} carries one quality that becomes their decisive edge when they stop hiding it. Pin one relationship this year where you let yours show.`}
         </Text>
 
         <View style={s.divider} />
@@ -1125,7 +1279,7 @@ export async function renderPaidReport(row: DbResponse): Promise<{ pdf: Buffer; 
           {scores.timeHorizon >= 60 ? " long-horizon leverage and concealed moves" : " fast execution and visible command"}
           — they will read as descriptions of moves you have already made.
         </Text>
-        <Link src={`https://quiz.wayofgods.com/book?from=pdf&archetype=${archetype.id}`} style={{ fontFamily: "DM Sans", fontSize: 11, color: CRIMSON, textDecoration: "none", fontWeight: 700 }}>
+        <Link src={`https://quiz.wayofgods.com/book?from=pdf&archetype=${archetype.id}`} style={{ fontFamily: USER_SANS, fontSize: 11, color: CRIMSON, textDecoration: "none", fontWeight: 700 }}>
           Get Sovereign Doctrine: quiz.wayofgods.com/book
         </Link>
 

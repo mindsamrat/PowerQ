@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DM_Sans, Playfair_Display } from "next/font/google";
+import StorageJanitor from "@/components/StorageJanitor";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -17,13 +18,15 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: "PQ — The Power Quotient Assessment | Way of Gods",
+  title: {
+    default: "PQ — The Power Quotient Assessment | Way of Gods",
+    template: "%s",
+  },
   description:
     "The PQ Assessment maps your psychology of power across 4 axes and 8 archetypes. A proprietary diagnostic from Way of Gods.",
   metadataBase: new URL("https://quiz.wayofgods.com"),
-  alternates: {
-    canonical: "/",
-  },
+  // No site-wide canonical: each indexable page declares its own, so /quiz,
+  // /privacy and the archetype pages never claim to be the homepage.
   openGraph: {
     title: "PQ — The Power Quotient Assessment",
     description:
@@ -48,6 +51,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${dmSans.variable} ${playfair.variable}`}>
       <body className="min-h-screen">
+        <StorageJanitor />
         {children}
       </body>
     </html>

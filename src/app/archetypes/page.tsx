@@ -12,6 +12,7 @@ export const metadata: Metadata = {
     description: "Study each archetype: signature, enemies, laws, and how to level up.",
     url: "https://quiz.wayofgods.com/archetypes",
   },
+  twitter: { card: "summary_large_image", title: "The Eight Power Archetypes", description: "Study each archetype: signature, enemies, laws, and how to level up." },
 };
 
 function ordinal(n: number): string {
@@ -58,7 +59,7 @@ export default function ArchetypesIndex() {
                     {a.totem.animal}
                   </span>
                   <span className="text-[10px] tracking-[0.2em] uppercase font-[family-name:var(--font-body)]" style={{ color: "rgba(255,255,255,0.3)" }}>
-                    {a.rarity}% · {ordinal(rank)} rarest
+                    est. {a.rarity}% · {ordinal(rank)} rarest
                   </span>
                 </div>
                 <h2 className="font-[family-name:var(--font-heading)] text-2xl md:text-3xl font-bold mb-2 group-hover:translate-x-0.5 transition-transform">

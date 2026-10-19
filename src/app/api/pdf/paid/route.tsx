@@ -60,6 +60,9 @@ export async function GET(req: Request) {
       return page(503, "One moment", `<p>Our database is waking up. Your purchase is safe — try again in a minute.</p><a class="btn" href="${retryHref}">Try again</a>${SUPPORT}`, 30);
     }
     const row = lookup.row as unknown as DbResponse;
+    if (row.payment_status === "refunded" || row.payment_status === "charged_back" || row.payment_status === "disputed") {
+      return page(403, "Report no longer available", `<p>This purchase was refunded or is under dispute, so the report can no longer be downloaded. If that is a mistake, we can put it right.</p>${SUPPORT}`);
+    }
     if (row.payment_status !== "paid") {
       return page(402, "Payment not confirmed yet", `<p>We haven't received confirmation of payment for this report. If you just paid, this usually takes a few seconds.</p><a class="btn" href="/paid?response_id=${encodeURIComponent(responseId)}">Check payment status</a>${SUPPORT}`);
     }

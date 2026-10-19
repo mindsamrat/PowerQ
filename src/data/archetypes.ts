@@ -599,9 +599,9 @@ export function getEnemy(a: Archetype): Archetype {
 }
 
 /** 1-based rank from rarest (1) to most common (N). */
+/** 1 = rarest. Archetypes with the same rarity share a rank (competition ranking). */
 export function getRarityRank(a: Archetype): number {
-  const sorted = [...archetypes].sort((x, y) => x.rarity - y.rarity);
-  return sorted.findIndex((x) => x.id === a.id) + 1;
+  return 1 + archetypes.filter((x) => x.rarity < a.rarity).length;
 }
 
 export function getArchetypeById(id: string): Archetype | undefined {

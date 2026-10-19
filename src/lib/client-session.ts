@@ -120,8 +120,10 @@ export function clearPending(): void {
 export function purgeExpiredStorage(): void {
   const local = safe(() => localStorage, null);
   if (!local) return;
-  for (const k of LEGACY_KEYS) safe(() => local.removeItem(k), undefined);
-  safe(() => sessionStorage, null) && LEGACY_KEYS.forEach((k) => safe(() => sessionStorage.removeItem(k), undefined));
+  for (const k of LEGACY_KEYS) {
+    safe(() => local.removeItem(k), undefined);
+    safe(() => sessionStorage.removeItem(k), undefined);
+  }
   for (const key of [SESSION_KEY, PENDING_KEY, PROGRESS_KEY, ATTRIBUTION_KEY]) {
     const rec = readJson<{ savedAt?: unknown }>(local, key);
     if (rec && !fresh(rec.savedAt)) safe(() => local.removeItem(key), undefined);

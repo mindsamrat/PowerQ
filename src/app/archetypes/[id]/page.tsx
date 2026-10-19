@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { withArticle } from "@/lib/sanitize";
 import { notFound } from "next/navigation";
 import {
   archetypes,
@@ -36,6 +37,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
       url: `https://quiz.wayofgods.com/archetypes/${a.id}`,
       type: "article",
     },
+    twitter: { card: "summary_large_image", title: `${a.name}: ${a.tagline}`, description },
   };
 }
 
@@ -76,7 +78,7 @@ export default async function ArchetypePage({ params }: { params: Promise<{ id: 
         {/* Hero */}
         <header className="text-center pt-14 pb-10">
           <p className="text-[10px] tracking-[0.35em] uppercase mb-5 font-[family-name:var(--font-body)]" style={{ color: accent }}>
-            Archetype · {a.rarity}% of respondents · {ordinal(rank)} rarest of 8
+            Archetype · est. {a.rarity}% of people · {ordinal(rank)} rarest of 8
           </p>
           <h1 className="font-[family-name:var(--font-heading)] text-5xl md:text-7xl font-bold leading-none mb-4" style={{ textShadow: `0 0 60px ${accent}55` }}>
             {a.name}
@@ -92,7 +94,7 @@ export default async function ArchetypePage({ params }: { params: Promise<{ id: 
           </p>
           <div className="flex items-center justify-center gap-3 flex-wrap mt-9">
             <Link href="/quiz" className="bg-[#C41E3A] hover:bg-[#E8526A] text-white font-semibold text-sm py-3.5 px-8 rounded-xl transition-colors duration-300 font-[family-name:var(--font-body)]">
-              Am I {a.name.replace(/^The /, "a ")}? Take the assessment
+              Am I {withArticle(a.name)}? Take the assessment
             </Link>
             <a href={`/book?from=archetype&archetype=${a.id}`} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm py-3.5 px-8 rounded-xl transition-colors duration-300 font-[family-name:var(--font-body)]" style={{ background: "rgba(201,168,76,1)", color: "#0A0A0A" }}>
               Get Sovereign Doctrine
@@ -253,7 +255,7 @@ export default async function ArchetypePage({ params }: { params: Promise<{ id: 
             {others.map((o) => (
               <Link key={o.id} href={`/archetypes/${o.id}`} className="rounded-xl p-4 text-center transition-colors duration-300 hover:bg-white/[0.05]" style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${o.cardAccent}2E` }}>
                 <p className="font-[family-name:var(--font-heading)] text-base font-bold">{o.name.replace(/^The /, "")}</p>
-                <p className="text-[10px] mt-1 font-[family-name:var(--font-body)]" style={{ color: o.cardAccent }}>{o.id === a.enemyId ? "Your enemy" : `${o.rarity}% rare`}</p>
+                <p className="text-[10px] mt-1 font-[family-name:var(--font-body)]" style={{ color: o.cardAccent }}>{o.id === a.enemyId ? "Your enemy" : `est. ${o.rarity}%`}</p>
               </Link>
             ))}
           </div>

@@ -4,10 +4,11 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Terms of Service | PQ — Way of Gods",
   description: "Terms for using the PQ Assessment and buying the full report.",
+  alternates: { canonical: "/terms" },
   robots: { index: true, follow: true },
 };
 
-const LAST_UPDATED = "6 September 2026";
+const LAST_UPDATED = "19 October 2026";
 
 export default function TermsOfService() {
   return (
@@ -22,7 +23,7 @@ export default function TermsOfService() {
         <h1 className="font-[family-name:var(--font-heading)] text-3xl font-bold mb-2">
           Terms of Service
         </h1>
-        <p className="text-xs text-text-muted/60 mb-8 font-[family-name:var(--font-body)]">Last updated {LAST_UPDATED}</p>
+        <p className="text-xs text-text-muted mb-8 font-[family-name:var(--font-body)]">Last updated {LAST_UPDATED}</p>
 
         <div className="space-y-6 text-sm text-text-muted leading-relaxed font-[family-name:var(--font-body)]">
           <section>
@@ -40,7 +41,7 @@ export default function TermsOfService() {
               The PQ Assessment is a self-report questionnaire that classifies how you tend to exert influence across four behavioural axes.
               It draws on published psychology and behavioural-economics frameworks, but it is <span className="text-text-primary">not</span> a clinical
               instrument, a psychological diagnosis, or professional advice of any kind. Results describe tendencies, not facts about you, and depend
-              entirely on how you answer. Archetype rarity figures are estimates until enough responses exist to compute them from data.
+              entirely on how you answer. Archetype rarity figures are framework estimates, not measured shares of respondents, and are labelled as such. The assessment is offered for self-reflection and entertainment.
               Do not make medical, legal, financial, or employment decisions on the basis of your results.
             </p>
           </section>
@@ -50,21 +51,23 @@ export default function TermsOfService() {
             <p>
               Taking the assessment and receiving the on-screen result and the free four-page summary costs nothing.
               To receive results you must provide a first name and a working email address. Disposable email addresses are rejected.
-              We limit the number of completions per network address per day to prevent abuse.
+              To prevent abuse we limit how many completions we store per email address and per network each day; past that limit you still see your result, but it is not saved and the paid report cannot be bought for it.
+              Marketing emails are sent only if you tick the box asking for them.
             </p>
           </section>
 
           <section>
             <h2 className="text-text-primary font-semibold text-base mb-2">4. The paid report</h2>
             <p>
-              The Full PQ Report is a digital PDF, generated from your stored answers, sold for the price shown at checkout (currently USD 3).
+              The Full PQ Report is a digital PDF, generated from your stored answers, sold for the price shown at checkout (currently USD 3; local taxes may be added by the payment provider).
               Payment is taken by Dodo Payments, who act as merchant of record; their terms apply to the transaction itself.
-              The report is available to download from the confirmation page immediately after payment is confirmed, and remains available at that link.
+              Delivery is on screen: as soon as the payment is confirmed (normally within seconds) the confirmation page shows a download button, and that page link keeps working so you can download the report again later.
+              We do not email the report, so save the PDF or keep the link. If the confirmation takes longer, the page keeps checking and can confirm the payment directly with Dodo; you will not be charged twice.
             </p>
             <p className="mt-2">
               <span className="text-text-primary">Refunds.</span> Because the report is personalised and delivered instantly, by completing the purchase you ask us to
               deliver it immediately and acknowledge that you lose any statutory right of withdrawal once it is delivered, where the law allows this.
-              If the report fails to generate or is materially defective, contact us within 14 days and we will fix it or refund you.
+              If the report fails to generate, cannot be downloaded, or is materially defective, email us within 14 days from the address you used at checkout and we will fix it or refund you in full. A refund withdraws access to the report.
               Nothing in these terms limits rights you have under consumer law that cannot be excluded.
             </p>
           </section>

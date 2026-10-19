@@ -133,27 +133,35 @@ const cardRes = await ctx.request.get(`${BASE}${cardSrc}`);
 ok(cardRes.status() === 200 && (cardRes.headers()["content-type"] ?? "").includes("image/png"), "share card 200 image/png");
 
 // Purchase path: teaser near the top, sticky bar on scroll, graceful errors.
-ok((resultsText.match(/Unlock Full Report/g) ?? []).length >= 2, "buy button appears both near the top and in the full card");
 ok(/one-time/i.test(resultsText) && /instant PDF/i.test(resultsText), "price and instant-delivery copy present");
-ok(/How The \w+ loses/i.test(resultsText) || /loses/i.test(resultsText), "locked preview of report content shown");
+ok(/How the \w+ lose/i.test(resultsText), "locked preview of report content shown");
 await page.evaluate(() => window.scrollTo(0, 1500));
 await page.waitForTimeout(700);
 ok(await page.locator("[data-sticky-unlock]").isVisible().catch(() => false), "sticky unlock bar appears after scrolling");
 await page.evaluate(() => window.scrollTo(0, 0));
 await page.waitForTimeout(300);
 
-await page.click('button:has-text("Unlock Full Report")');
-await page.waitForTimeout(1500);
-const afterCheckout = await page.locator("body").innerText();
-const graceful = EXPECT_DEGRADED
-  ? /could not store your profile|Still saving your profile/i
-  : /Payments aren.t configured|unavailable right now|lost its session/i;
-ok(graceful.test(afterCheckout), "checkout shows a graceful, human error", afterCheckout.match(/(Payments[^\n]*|could not store[^\n]*|unavailable[^\n]*)/)?.[0] ?? "");
-ok(!/TypeError|fetch failed|\{"|status code/i.test(afterCheckout), "checkout error contains no raw technical detail");
+if (EXPECT_DEGRADED) {
+  // The save is queued for retry, so nothing can be sold yet: every buy
+  // control must say so instead of opening a checkout for nothing.
+  const t = await page.locator("body").innerText();
+  ok(/Saving your profile|Retry saving my profile/i.test(t), "degraded: buy buttons explain the pending save");
+  ok((await page.locator('button:has-text("Unlock Full Report"):not([disabled])').count()) === 0, "degraded: no live Unlock button");
+} else {
+  ok((resultsText.match(/Unlock Full Report/g) ?? []).length >= 2, "buy button appears both near the top and in the full card");
+  await page.click('button:has-text("Unlock Full Report")');
+  await page.waitForTimeout(1500);
+  const afterCheckout = await page.locator("body").innerText();
+  const graceful = /Payments aren.t configured|unavailable right now|couldn.t find your saved result|database is waking up/i;
+  ok(graceful.test(afterCheckout), "checkout shows a graceful, human error", afterCheckout.match(/(Payments[^\n]*|couldn.t find[^\n]*|unavailable[^\n]*|database[^\n]*)/)?.[0] ?? "");
+  ok(!/TypeError|fetch failed|\{"|status code/i.test(afterCheckout), "checkout error contains no raw technical detail");
+  // Every Unlock button must come back to life after a failed checkout.
+  ok((await page.locator('button:has-text("Unlock Full Report"):not([disabled])').count()) >= 1, "unlock buttons re-enabled after a failed checkout");
+}
 
 // ---------- API edge cases ----------
 const post = (path, body, headers = {}) => ctx.request.post(`${BASE}${path}`, { data: body, headers: { "content-type": "application/json", ...headers } });
-let r = await post("/api/subscribe", { honeypot: "x", name: "a", email: "a@b.co" });
+let r = await post("/api/subscribe", { website: "x", name: "a", email: "a@b.co" });
 ok(r.status() === 200, "subscribe honeypot returns 200 silently");
 r = await post("/api/subscribe", { name: "Test", email: "not-an-email", answers: [] });
 ok(r.status() === 400, "subscribe rejects bad email 400");
@@ -166,11 +174,17 @@ ok(r.status() === 404, "response lookup unknown id 404");
 r = await ctx.request.get(`${BASE}/api/pdf/paid?id=00000000-0000-0000-0000-000000000000`);
 ok(r.status() === 404, "paid PDF unknown id 404 (no leak)");
 r = await ctx.request.get(`${BASE}/api/pdf/paid`);
-ok(r.status() === 400, "paid PDF missing id 400");
+ok(r.status() === 400 || r.status() === 404, "paid PDF missing id rejected", String(r.status()));
+r = await post("/api/payments/verify", { responseId: "nope", paymentId: "x" });
+ok(r.status() === 400, "payment verify rejects malformed ids 400");
+r = await ctx.request.post(`${BASE}/api/subscribe`, { data: "name=x", headers: { "content-type": "text/plain" } });
+ok(r.status() === 415 || r.status() === 400 || r.status() === 403, "subscribe refuses non-JSON (cross-site form) bodies", String(r.status()));
+r = await post("/api/checkout/dodo", { responseId: "00000000-0000-0000-0000-000000000000" }, { origin: "https://evil.example" });
+ok(r.status() === 403, "checkout refuses a cross-site origin 403", String(r.status()));
 
 // webhook: missing headers, bad signature, good signature
 r = await post("/api/webhooks/dodo", { type: "payment.succeeded" });
-ok(r.status() === 401 || r.status() === 500, "webhook without headers rejected", String(r.status()));
+ok(r.status() === 401 || (r.status() === 503 && !WEBHOOK_SECRET), "webhook without headers rejected (503 = secret not configured)", String(r.status()));
 if (WEBHOOK_SECRET) {
   const body = JSON.stringify({ type: "payment.succeeded", data: { metadata: { response_id: "00000000-0000-0000-0000-000000000000" } } });
   const ts = String(Math.floor(Date.now() / 1000));
@@ -182,6 +196,20 @@ if (WEBHOOK_SECRET) {
   ok(r.status() === 401, "webhook stale timestamp 401");
   r = await ctx.request.post(`${BASE}/api/webhooks/dodo`, { data: body, headers: { "content-type": "application/json", "webhook-id": "msg_1", "webhook-timestamp": ts, "webhook-signature": `v1,${sig}` } });
   ok(r.status() === 503, "webhook valid signature but DB unavailable -> 503 (Dodo retries)", String(r.status()));
+}
+
+// A shared link in a fresh browser: the result shows, but nothing is for sale
+// (the report belongs to whoever answered). The visitor gets a retake path.
+{
+  const fresh = await browser.newContext({ viewport: { width: 420, height: 860 } });
+  const p2 = await fresh.newPage();
+  await p2.goto(`${BASE}/results?id=blade&c=80&v=70&t=30&p=75&pq=60`, { waitUntil: "networkidle" });
+  await p2.waitForTimeout(800);
+  const t = await p2.locator("body").innerText();
+  ok(/Is this your result\?/i.test(t) && /Take the assessment/i.test(t), "shared link: retake path instead of a buy button");
+  ok((await p2.locator('button:has-text("Unlock Full Report")').count()) === 0, "shared link: no Unlock button");
+  ok(/The Blade/.test(t), "shared link: result still rendered");
+  await fresh.close();
 }
 
 // ---------- Static / misc ----------
@@ -233,11 +261,30 @@ if (process.env.ADMIN_TOKEN) {
 }
 r = await ctx.request.get(`${BASE}/`);
 const h = r.headers();
-ok(h["x-content-type-options"] === "nosniff" && !!h["x-frame-options"], "security headers present");
+ok(h["x-content-type-options"] === "nosniff" && h["x-frame-options"] === "DENY", "security headers present");
+ok((h["content-security-policy"] ?? "").includes("frame-ancestors 'none'"), "CSP present on pages", (h["content-security-policy"] ?? "").slice(0, 60));
+ok((h["strict-transport-security"] ?? "").includes("max-age"), "HSTS present");
 ok(!h["x-powered-by"], "x-powered-by removed");
+r = await ctx.request.get(`${BASE}/results?id=blade&c=80&v=70&t=30&p=75&pq=60`);
+ok((r.headers()["x-robots-tag"] ?? "").includes("noindex"), "results page sends noindex");
+r = await ctx.request.get(`${BASE}/paid?response_id=00000000-0000-0000-0000-000000000000`);
+ok((r.headers()["x-robots-tag"] ?? "").includes("noindex") && r.headers()["referrer-policy"] === "no-referrer", "paid page sends noindex + no-referrer");
+r = await ctx.request.get(`${BASE}/opengraph-image`);
+ok(r.status() === 200 && (r.headers()["content-type"] ?? "").includes("image/png"), "social preview image renders");
+r = await ctx.request.get(`${BASE}/quiz`);
+ok(r.status() === 200 && (await r.text()).includes("Take the PQ Assessment"), "quiz page has its own title");
 await page.goto(`${BASE}/paid?response_id=00000000-0000-0000-0000-000000000000`);
 await page.waitForTimeout(1200);
-ok(((await page.textContent("body")) ?? "").includes("Hold a moment"), "paid page shows verifying state");
+{
+  const t = (await page.textContent("body")) ?? "";
+  ok(t.includes("Hold a moment") || t.includes("can\u2019t find a result") || t.includes("can't find a result"), "paid page shows verifying or not-found state");
+}
+await page.goto(`${BASE}/paid?response_id=00000000-0000-0000-0000-000000000000&status=failed`);
+await page.waitForTimeout(2500);
+{
+  const t = (await page.textContent("body")) ?? "";
+  ok(/didn.t go through|can.t find a result/i.test(t), "paid page handles a failed return status", t.slice(0, 80));
+}
 await page.goto(`${BASE}/privacy`); ok(((await page.textContent("body")) ?? "").includes("Supabase"), "privacy page mentions real storage");
 await page.goto(`${BASE}/terms`); ok(((await page.textContent("body")) ?? "").includes("Dodo Payments"), "terms page mentions Dodo");
 
