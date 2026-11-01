@@ -9,7 +9,9 @@ import { countRecent } from "@/lib/supabase-server";
  */
 export const LIMITS = {
   perEmailPerDay: 6,
-  perNetworkPerDay: 60,
+  // High on purpose: mobile carriers put thousands of phones behind one IP
+  // (Jio, Airtel, US carriers), and an Instagram story sends them all at once.
+  perNetworkPerDay: 400,
 } as const;
 
 export interface LimitCheck {

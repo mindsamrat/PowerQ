@@ -628,7 +628,7 @@ function EmailStep({
             className={`mt-0.5 h-4 w-4 shrink-0 accent-[#C41E3A] rounded ${FOCUS_RING}`}
           />
           <span className="text-xs text-text-muted font-[family-name:var(--font-body)] leading-relaxed">
-            Email me occasional notes from Way of Gods. Unsubscribe anytime.
+            Yes, send me occasional notes on power for my archetype from Way of Gods. Free, unsubscribe anytime.
           </span>
         </label>
 

@@ -8,7 +8,8 @@
 -- 1. Columns the hardened app writes.
 alter table public.responses add column if not exists payment_id text;              -- Dodo payment id (refunds/disputes are matched on it)
 alter table public.responses add column if not exists marketing_consent boolean not null default false; -- the opt-in checkbox on the email step
-alter table public.responses add column if not exists attribution jsonb;            -- first-touch utm_* / referrer, for tracing revenue to a post
+alter table public.responses add column if not exists consent_at timestamptz;      -- when they ticked it
+alter table public.responses add column if not exists utm jsonb;                    -- first-touch utm_* / referrer, for tracing sign-ups to a post
 alter table public.responses add column if not exists paid_at timestamptz;          -- already present on most installs; harmless otherwise
 
 -- 2. Payment status values. Older installs had a CHECK allowing only
@@ -35,6 +36,7 @@ alter table public.responses
 create index if not exists responses_email_created_idx on public.responses (email, created_at desc);        -- duplicate detection + per-email daily limit
 create index if not exists responses_ip_created_idx on public.responses (ip_address, created_at desc);      -- per-network daily limit
 create index if not exists responses_created_idx on public.responses (created_at desc);                     -- psychometrics paging, retention clean-up
+create index if not exists responses_consent_idx on public.responses (marketing_consent) where marketing_consent; -- exporting the mailing list
 create unique index if not exists responses_payment_id_uidx on public.responses (payment_id) where payment_id is not null; -- one row per Dodo payment
 
 -- 4. Lock the table down. The site talks to the database only with the
@@ -56,5 +58,10 @@ revoke all on public.responses from anon, authenticated;
 --      where created_at < now() - interval '30 days'
 --        and (ip_address is not null or user_agent is not null);
 
--- 6. Deleting someone's data on request (replace the address):
+-- 6. Your mailing list (people who ticked the box), newest first, one row per address:
+--      select distinct on (lower(email)) lower(email) as email, name, archetype_id, created_at
+--      from public.responses where marketing_consent order by lower(email), created_at desc;
+--    Run it in the SQL Editor, then use "Download CSV".
+
+-- 7. Deleting someone's data on request (replace the address):
 --      delete from public.responses where email = 'person@example.com';

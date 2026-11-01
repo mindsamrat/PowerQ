@@ -245,15 +245,23 @@ export async function saveResponseToSupabase(row: ResponseRow): Promise<string |
       run<{ id: string } | null>(() => sb.from("responses").insert(values).select("id").single())
     );
 
-  try {
-    const data = await insert({ ...core, ...optional });
-    return data?.id ?? null;
-  } catch (err) {
-    if (!isMissingColumn(err)) throw err;
-    console.warn("[supabase] optional columns missing; run supabase/migrations/20261018_hardening.sql. Saving core fields only.");
-    const data = await insert(core);
-    return data?.id ?? null;
+  // Newer columns may not exist yet (migration not run). Never lose the email
+  // over them: fall back step by step, keeping the consent flag if possible.
+  const attempts: Record<string, unknown>[] = [
+    { ...core, ...optional },
+    { ...core, marketing_consent: optional.marketing_consent },
+    core,
+  ];
+  for (let i = 0; i < attempts.length; i += 1) {
+    try {
+      const data = await insert(attempts[i]);
+      if (i > 0) console.warn("[supabase] some columns are missing; run supabase/migrations/20261018_hardening.sql so consent and attribution are stored.");
+      return data?.id ?? null;
+    } catch (err) {
+      if (!isMissingColumn(err) || i === attempts.length - 1) throw err;
+    }
   }
+  return null;
 }
 
 /**

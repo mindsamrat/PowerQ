@@ -79,17 +79,26 @@ They must email from the address they used on the quiz (that is the identity che
 
 Answer within 30 days (the policy promises this).
 
-## 8. Question quality (needs real respondents)
+## 8. Your email list
+
+Every person who finishes the quiz must give a first name and email to see their result, so **every completion is an email**. They land in Supabase → Table editor → `responses` (`email`, `name`, `archetype_id`, `created_at`).
+
+- `marketing_consent = true` → they ticked "send me occasional notes". **Only email these people with newsletters or promotions.** Everyone else gave their email to get their result; you may contact them about their result/report, not marketing.
+- `utm` → which post/story brought them (when the link carried `utm_` tags).
+- To export the list: SQL Editor → paste the query in section 6 of the migration file → Run → **Download CSV** → import into your email tool.
+- For an Instagram story, link to `https://quiz.wayofgods.com/?utm_source=instagram&utm_medium=story&utm_campaign=<name>` so each story's sign-ups can be counted.
+
+## 9. Question quality (needs real respondents)
 
 With `ADMIN_TOKEN` set, open **https://quiz.wayofgods.com/admin/psychometrics?token=YOUR_TOKEN**. It uses answers only (no names or emails) and shows archetype distribution vs the estimates, axis distributions, reliability per axis, per-question discrimination, paired-question agreement and a plain-language list of what to fix. Numbers mean little under 100 responses; recompute rarity and norms at 300+.
 
-## 9. Things that are normal
+## 10. Things that are normal
 
 - **Vercel toolbar missing in previews.** The site sends a strict Content-Security-Policy; the preview toolbar is blocked by it. Expected.
 - **`/results` and `/paid` are not in Google.** They send `noindex`. Expected.
 - **Health shows `payments.webhookConfigured: false`** right after setup — add `DODO_WEBHOOK_SECRET` and redeploy.
 
-## 10. Tests (run locally, before deploying big changes)
+## 11. Tests (run locally, before deploying big changes)
 
 ```
 npm run audit:scoring   # scoring simulator: reachability, recovery, confidence calibration
