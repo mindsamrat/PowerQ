@@ -14,6 +14,7 @@ import {
 import { matchArchetype } from "@/lib/scoring";
 import { readConfidence } from "@/lib/result-analysis";
 import { PAID_REPORT_PAGES } from "@/data/report-meta";
+import { burstGuard, createWindowLimiter } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -87,7 +88,12 @@ function axisBarRow(axis: AxisId, value: number) {
   );
 }
 
+/** Renders are CPU-heavy; repeat URLs come from the CDN, this stops scripted floods of new ones. */
+const burst = createWindowLimiter(60, 60 * 1000);
+
 export async function GET(req: Request) {
+  const flood = burstGuard(burst, req);
+  if (flood) return flood;
   registerFonts();
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "sovereign";

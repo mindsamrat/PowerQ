@@ -118,7 +118,8 @@ function useResultSession(sig: string): { session: SessionRecord | null; status:
             return;
           }
           // A 4xx means the payload itself is the problem; retrying won't help.
-          if (res.status >= 400 && res.status < 500) {
+          // 429 is different: the server is busy, so keep the queued save.
+          if (res.status >= 400 && res.status < 500 && res.status !== 429) {
             clearPending();
             if (!cancelled) setState({ session, status: "rejected", ready: true });
             return;

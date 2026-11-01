@@ -2,6 +2,7 @@ import { ImageResponse } from "next/og";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { archetypes, axisLabels, getArchetypeById, type AxisId } from "@/data/archetypes";
+import { burstGuard, createWindowLimiter } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -30,7 +31,12 @@ function clamp(raw: string | null, fallback: number): number {
   return Math.max(0, Math.min(100, n));
 }
 
+/** Renders are CPU-heavy; repeat URLs come from the CDN, this stops scripted floods of new ones. */
+const burst = createWindowLimiter(120, 60 * 1000);
+
 export async function GET(req: Request) {
+  const flood = burstGuard(burst, req);
+  if (flood) return flood;
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "sovereign";
   const archetype = getArchetypeById(id) ?? archetypes[0];

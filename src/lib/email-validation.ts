@@ -78,11 +78,24 @@ async function domainResolves(domain: string): Promise<LookupResult> {
  * offline resolver answers "does not exist" for everything; in that case we
  * let the user through rather than block every sign-up.
  */
+/** Domain answers, reused for an hour per instance (company domains repeat a lot during a launch). */
+const DOMAIN_CACHE_MS = 60 * 60 * 1000;
+const domainCache = new Map<string, { ok: boolean; at: number }>();
+
 export async function verifyMxRecord(email: string): Promise<boolean> {
   const domain = email.split("@")[1];
   if (!domain) return false;
   if (KNOWN_PROVIDERS.has(domain)) return true;
 
+  const hit = domainCache.get(domain);
+  if (hit && Date.now() - hit.at < DOMAIN_CACHE_MS) return hit.ok;
+  const ok = await checkDomain(domain);
+  if (domainCache.size > 5000) domainCache.clear();
+  domainCache.set(domain, { ok, at: Date.now() });
+  return ok;
+}
+
+async function checkDomain(domain: string): Promise<boolean> {
   const result = await domainResolves(domain);
   if (result.found) return true;
   if (!result.definitiveMiss) return true; // timeouts / SERVFAIL: resolver trouble, not the user's

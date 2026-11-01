@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getClientIp } from "@/lib/rate-limit";
 
 /**
  * Shared guards for state-changing JSON endpoints.
@@ -82,6 +83,20 @@ export function createWindowLimiter(max: number, windowMs: number, capacity = 50
     b.count += 1;
     return b.count <= max;
   };
+}
+
+/**
+ * Per-instance burst guard for public endpoints. Generous on purpose: one
+ * mobile-carrier IP can stand for thousands of real phones, so this only
+ * trips for scripted floods. Returns a 429 response to send, or null.
+ */
+export function burstGuard(limiter: (key: string) => boolean, req: Request, retryAfterSeconds = 60): Response | null {
+  const ip = getClientIp(req);
+  if (!ip || limiter(ip)) return null;
+  return NextResponse.json(
+    { error: "Too many requests from your network. Please try again in a minute." },
+    { status: 429, headers: { "Retry-After": String(retryAfterSeconds), "Cache-Control": "no-store" } }
+  );
 }
 
 /** Normalise Dodo env values: trim, strip trailing slashes, default to live. */

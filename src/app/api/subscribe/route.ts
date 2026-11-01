@@ -5,7 +5,7 @@ import { findRecentDuplicate, isSupabaseConfigured, saveResponseToSupabase } fro
 import { calculateAxisScores, matchArchetype, computePQ, type ScoredAnswer } from "@/lib/scoring";
 import { questions } from "@/data/questions";
 import { checkSubmissionLimits, getClientIp } from "@/lib/rate-limit";
-import { readJsonBody, rejectCrossSite } from "@/lib/http";
+import { burstGuard, createWindowLimiter, readJsonBody, rejectCrossSite } from "@/lib/http";
 import { sanitizeFreeText, sanitizeName } from "@/lib/sanitize";
 
 export const runtime = "nodejs";
@@ -15,6 +15,9 @@ export const maxDuration = 30;
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_ANSWERS = 60;
 const FREE_TEXT_IDS = new Set(questions.filter((q) => q.kind === "free-text").map((q) => q.id));
+
+/** Scripted floods only: 60 completions a minute from one network, per instance. */
+const burst = createWindowLimiter(60, 60 * 1000);
 
 const ATTRIBUTION_KEYS = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "ref", "landing"] as const;
 
@@ -82,6 +85,8 @@ export async function POST(req: Request) {
 async function handle(req: Request) {
   const refused = rejectCrossSite(req);
   if (refused) return refused;
+  const flood = burstGuard(burst, req);
+  if (flood) return flood;
 
   const parsed = await readJsonBody(req, MAX_BODY_BYTES);
   if ("error" in parsed) return parsed.error;
@@ -133,9 +138,10 @@ async function handle(req: Request) {
     try {
       // Same email + same answers moments ago (double tap, client retry,
       // background re-submit): reuse that row instead of inserting again.
-      responseId = await findRecentDuplicate(email, answers);
+      // Both look-ups run together: one database round trip of waiting, not two.
+      const [duplicate, limit] = await Promise.all([findRecentDuplicate(email, answers), checkSubmissionLimits(email, ip)]);
+      responseId = duplicate;
       if (!responseId) {
-        const limit = await checkSubmissionLimits(email, ip);
         if (!limit.allowed) {
           // Never withhold a computed result. Show it; just don't store more.
           limited = true;

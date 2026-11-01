@@ -18,8 +18,12 @@ const DB_NOTES: Record<string, string> = {
   unconfigured: "SUPABASE_URL / SUPABASE_SECRET_KEY are missing in this environment.",
 };
 
+/** The answer is reused for 10 s per instance: refreshing is fine, spamming can't reach the database. */
+let recent: { at: number; result: Awaited<ReturnType<typeof pingSupabaseDetail>> } | null = null;
+
 export async function GET() {
-  const { state: db, code: dbCode } = await pingSupabaseDetail();
+  if (!recent || Date.now() - recent.at > 10_000) recent = { at: Date.now(), result: await pingSupabaseDetail() };
+  const { state: db, code: dbCode } = recent.result;
   const keyKind = supabaseKeyKind();
   const { apiKey, productId, mode } = dodoConfig();
   const isProduction = process.env.VERCEL_ENV === "production";

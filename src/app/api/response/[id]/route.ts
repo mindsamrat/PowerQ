@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isResponseId, lookupResponse } from "@/lib/supabase-server";
+import { burstGuard, createWindowLimiter } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -9,7 +10,12 @@ const NO_STORE = { "Cache-Control": "private, no-store" };
  * Read-only status endpoint polled by /paid and the results page. Returns
  * only what those pages need — never name, email, answers, free text or IP.
  */
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+/** /paid polls every few seconds; this only stops a script from hammering the database. */
+const burst = createWindowLimiter(240, 60 * 1000);
+
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const flood = burstGuard(burst, req, 10);
+  if (flood) return flood;
   const { id } = await params;
   if (!isResponseId(id)) return NextResponse.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 
