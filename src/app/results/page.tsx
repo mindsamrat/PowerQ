@@ -257,11 +257,12 @@ function ResultsPage() {
         <Divider />
         <WeaknessSection archetype={archetype} />
         <Divider />
-        <DoctrineSection archetype={archetype} />
-        <Divider />
         <ShareCardSection archetype={archetype} cardUrl={cardUrl} />
         <Divider />
         <UpsellSection archetype={archetype} scores={scores} pq={pq} purchase={purchase} answered={answers?.length ?? null} responseId={session?.id ?? null} />
+        <Divider />
+        {/* The book comes after the report offer: one decision at a time. */}
+        <DoctrineSection archetype={archetype} />
         <Divider />
         <ComparisonSection archetype={archetype} />
 

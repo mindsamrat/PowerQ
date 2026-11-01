@@ -6,4 +6,6 @@
 export const PAID_REPORT_PAGES = 25;
 export const FREE_REPORT_PAGES = 4;
 /** Display price of the paid report. The real price is set on the Dodo product; keep these in sync. */
-export const REPORT_PRICE_LABEL = "$3";
+export const REPORT_PRICE_LABEL = "$9";
+/** Display price of Sovereign Doctrine, offered on the thank-you page. The real price lives in the shop. */
+export const SOVEREIGN_PRICE_LABEL = "$99";

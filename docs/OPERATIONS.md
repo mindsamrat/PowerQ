@@ -26,13 +26,14 @@ All live in **Vercel → Project → Settings → Environment Variables**. Never
 | `SUPABASE_URL` | yes | Project URL. |
 | `SUPABASE_SECRET_KEY` | yes | Secret / service-role key (server only). |
 | `DODO_API_KEY` | yes | Dodo Payments API key. Live key in Production. |
-| `DODO_PRODUCT_ID` | yes | The `pdt_…` id of the $3 report product, same mode as the key. |
+| `DODO_PRODUCT_ID` | yes | The `pdt_…` id of the $9 report product, same mode as the key. |
 | `DODO_WEBHOOK_SECRET` | yes | `whsec_…` from the webhook you created (section 3). Without it, reports never unlock automatically. |
 | `DODO_API_BASE` | Preview only | `https://test.dodopayments.com`. **Never set in Production.** |
 | `DODO_BUSINESS_ID` | optional | Your Dodo business id; payments from any other business are ignored. |
 | `CRON_SECRET` | recommended | Random string; stops strangers triggering the daily job. |
 | `ADMIN_TOKEN` | optional | 16+ random characters; unlocks `/admin/psychometrics?token=…`. |
 | `SOVEREIGN_DOCTRINE_URL` | optional | Where every "Get Sovereign Doctrine" button goes. |
+| `VAULT_URL` | optional | Shop page for the Vault. When set, the thank-you page offers it too (redeploy after setting). |
 
 Test mode: make a **Preview** deployment (any branch other than `main`) and set the test key, test product and `DODO_API_BASE` there. Keep Production on live keys only.
 
@@ -62,6 +63,11 @@ If Supabase still pauses, the cron is not running: Vercel → Project → Settin
 5. The PDF is generated on demand from the stored answers. The `/paid` link keeps working, so a buyer can come back and download again.
 
 A refund or a lost dispute **revokes** access (the download then says the report is no longer available); a won dispute restores it.
+
+### The funnel and the prices on screen
+
+Quiz → email → free result → **$9 report** → thank-you page offers **Sovereign Doctrine ($99)** and, if `VAULT_URL` is set, **the Vault**.
+The prices shown on the site are labels in `src/data/report-meta.ts`. The real prices are set in Dodo (report) and in your shop (book, Vault). If you change a price there, change the label too.
 
 ## 6. "I paid but I have no report"
 

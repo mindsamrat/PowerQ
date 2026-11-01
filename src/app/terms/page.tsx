@@ -59,7 +59,7 @@ export default function TermsOfService() {
           <section>
             <h2 className="text-text-primary font-semibold text-base mb-2">4. The paid report</h2>
             <p>
-              The Full PQ Report is a digital PDF, generated from your stored answers, sold for the price shown at checkout (currently USD 3; local taxes may be added by the payment provider).
+              The Full PQ Report is a digital PDF, generated from your stored answers, sold for the price shown at checkout (currently USD 9; local taxes may be added by the payment provider).
               Payment is taken by Dodo Payments, who act as merchant of record; their terms apply to the transaction itself.
               Delivery is on screen: as soon as the payment is confirmed (normally within seconds) the confirmation page shows a download button, and that page link keeps working so you can download the report again later.
               We do not email the report, so save the PDF or keep the link. If the confirmation takes longer, the page keeps checking and can confirm the payment directly with Dodo; you will not be charged twice.
