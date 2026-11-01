@@ -94,14 +94,16 @@ function useResultSession(sig: string): { session: SessionRecord | null; status:
     setState({ session, status: "retrying", ready: true });
 
     (async () => {
-      for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
-        if (attempt > 0) await new Promise((r) => window.setTimeout(r, 4000 * attempt));
+      // The server already retries the database itself, so two tries here is
+      // enough; after that say so plainly instead of spinning on "Saving".
+      for (let attempt = 0; attempt < 2 && !cancelled; attempt += 1) {
+        if (attempt > 0) await new Promise((r) => window.setTimeout(r, 3000));
         try {
           const res = await fetch("/api/subscribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(pending.payload),
-            signal: AbortSignal.timeout(20000),
+            signal: AbortSignal.timeout(15000),
           });
           const body = (await res.json().catch(() => ({}))) as { responseId?: unknown; limited?: unknown };
           if (res.ok && typeof body.responseId === "string" && body.responseId) {

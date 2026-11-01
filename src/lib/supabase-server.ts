@@ -440,14 +440,40 @@ export type PingResult = "ok" | "unreachable" | "rejected" | "unconfigured";
  * a configuration problem, not a paused project.
  */
 export async function pingSupabase(): Promise<PingResult> {
+  return (await pingSupabaseDetail()).state;
+}
+
+/** Ping plus the Postgres/PostgREST error code when the database refused (safe to show: no data). */
+export async function pingSupabaseDetail(): Promise<{ state: PingResult; code: string | null }> {
   const sb = getServerSupabase();
-  if (!sb) return "unconfigured";
+  if (!sb) return { state: "unconfigured", code: null };
   try {
     await run(() => sb.from("responses").select("id").limit(1));
-    return "ok";
+    return { state: "ok", code: null };
   } catch (err) {
-    if (err instanceof SupabaseUnavailableError) return "unreachable";
+    if (err instanceof SupabaseUnavailableError) return { state: "unreachable", code: null };
     console.warn("[supabase] ping rejected:", describe(err));
-    return "rejected";
+    return { state: "rejected", code: err instanceof SupabaseQueryError && err.code ? err.code : null };
   }
+}
+
+/**
+ * Which kind of key is configured, without revealing it. The site must use
+ * the SECRET (service-role) key: the public/anon key is blocked by row-level
+ * security, so every save fails and results sit on "Saving…".
+ */
+export function supabaseKeyKind(): "secret" | "public" | "unknown" | "missing" {
+  const key = supabaseKey();
+  if (!key) return "missing";
+  if (key.startsWith("sb_secret_")) return "secret";
+  if (key.startsWith("sb_publishable_")) return "public";
+  const parts = key.split(".");
+  if (parts.length === 3) {
+    try {
+      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { role?: unknown };
+      if (payload.role === "service_role") return "secret";
+      if (payload.role === "anon" || payload.role === "authenticated") return "public";
+    } catch { /* not a JWT */ }
+  }
+  return "unknown";
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { pingSupabase } from "@/lib/supabase-server";
+import { pingSupabaseDetail, supabaseKeyKind } from "@/lib/supabase-server";
 import { dodoConfig } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -19,11 +19,17 @@ const DB_NOTES: Record<string, string> = {
 };
 
 export async function GET() {
-  const db = await pingSupabase();
+  const { state: db, code: dbCode } = await pingSupabaseDetail();
+  const keyKind = supabaseKeyKind();
   const { apiKey, productId, mode } = dodoConfig();
   const isProduction = process.env.VERCEL_ENV === "production";
 
   const warnings: string[] = [];
+  if (keyKind === "public") {
+    warnings.push("SUPABASE_SECRET_KEY holds the PUBLIC (anon / publishable) key. Nothing can be saved with it. In Supabase → Project Settings → API Keys, copy the key labelled “secret” (or “service_role”) into SUPABASE_SECRET_KEY in Vercel and redeploy.");
+  }
+  if (db === "rejected" && dbCode === "42P01") warnings.push("The 'responses' table does not exist in this Supabase project.");
+  if (db === "rejected" && (dbCode === "42501" || dbCode === "PGRST301")) warnings.push("Supabase refused permission. Use the SECRET (service-role) key in SUPABASE_SECRET_KEY.");
   if (isProduction && mode === "test") {
     warnings.push("Payments are in TEST mode on the live site: anyone can 'buy' with a test card. Remove DODO_API_BASE and use live keys.");
   }
@@ -31,7 +37,7 @@ export async function GET() {
 
   const body = {
     ok: db === "ok",
-    database: { configured: db !== "unconfigured", reachable: db === "ok", state: db, note: DB_NOTES[db] },
+    database: { configured: db !== "unconfigured", reachable: db === "ok", state: db, errorCode: dbCode, keyType: keyKind, note: DB_NOTES[db] },
     payments: {
       configured: !!(apiKey && productId),
       webhookConfigured: !!process.env.DODO_WEBHOOK_SECRET?.trim(),
